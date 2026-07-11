@@ -365,5 +365,191 @@ router.get('/session/:id/students', authFaculty, async (req, res) => {
     res.status(500).json({ error: 'Server error: ' + error.message });
   }
 });
+// ============ STUDENT: Mark Attendance ============
+router.post('/mark', authStudent, async (req, res) => {
+  try {
+    const { qrToken, studentGPS, studentAccuracy } = req.body;
 
+    console.log('📨 Mark attendance request:');
+    console.log('   QR Token:', qrToken);
+    console.log('   Student GPS:', studentGPS);
+
+    if (!qrToken || !studentGPS || studentGPS.lat == null || studentGPS.lng == null) {
+      return res.status(400).json({ error: 'qrToken and studentGPS {lat, lng} are required' });
+    }
+
+    // Find session by QR token
+    const session = await AttendanceSession.findOne({ qrToken });
+    if (!session) {
+      return res.status(404).json({ error: 'Invalid QR code. This attendance session was not found.' });
+    }
+
+    if (session.status === 'ended') {
+      return res.status(400).json({ error: 'This attendance session has already ended.' });
+    }
+
+    // Get student's batch
+    const student = await Student.findById(req.student.id).select('batch');
+    const studentBatch = student?.batch || null;
+
+    // Batch check
+    if (session.batches.length > 0) {
+      if (!studentBatch || !session.batches.includes(studentBatch)) {
+        return res.status(403).json({ 
+          error: 'This class is not for your batch.',
+          yourBatch: studentBatch,
+          allowedBatches: session.batches
+        });
+      }
+    }
+
+    // Check if already marked
+    const existingRecord = await AttendanceRecord.findOne({
+      session: session._id,
+      student: req.student.id
+    });
+
+    if (existingRecord) {
+      return res.status(400).json({ 
+        error: 'You have already marked attendance for this session.',
+        status: existingRecord.status
+      });
+    }
+
+    // Calculate distance
+    const distance = haversineMeters(session.anchorLocation, studentGPS);
+    const accuracy = studentAccuracy || 20;
+    const effectiveRadius = session.radiusMeters + Math.min(accuracy, 50) + Math.min(session.anchorAccuracy, 30);
+
+    let status;
+    if (distance <= effectiveRadius) {
+      status = 'present';
+    } else if (distance <= effectiveRadius * 1.5) {
+      status = 'flagged';
+    } else {
+      status = 'rejected';
+    }
+
+    const record = new AttendanceRecord({
+      session: session._id,
+      student: req.student.id,
+      studentLocation: { lat: studentGPS.lat, lng: studentGPS.lng },
+      studentAccuracy: accuracy,
+      distanceFromAnchor: Math.round(distance),
+      status
+    });
+
+    await record.save();
+
+    console.log(`✅ Attendance marked: ${req.student.id} -> ${status} (${Math.round(distance)}m)`);
+
+    res.status(201).json({
+      message: status === 'present' ? '✅ Marked present!' :
+               status === 'flagged' ? '⚠️ Marked — pending professor review' :
+               "❌ Couldn't verify your location. Please ask your professor to mark you manually.",
+      status,
+      distanceFromAnchor: Math.round(distance)
+    });
+  } catch (error) {
+    if (error.code === 11000) {
+      return res.status(400).json({ error: 'You have already marked attendance for this session.' });
+    }
+    console.error('❌ Mark attendance error:', error);
+    res.status(500).json({ error: 'Server error: ' + error.message });
+  }
+});
+
+// ============ FACULTY: Get All Students with Attendance Status ============
+router.get('/session/:id/students', authFaculty, async (req, res) => {
+  try {
+    const session = await AttendanceSession.findOne({ _id: req.params.id, faculty: req.faculty.id });
+    if (!session) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    // ✅ Get ALL students
+    const allStudents = await Student.find({}).select('name rollNo email batch');
+    const records = await AttendanceRecord.find({ session: session._id });
+
+    const sessionBatches = session.batches.length > 0 ? session.batches : [];
+
+    const result = allStudents.map(student => {
+      const record = records.find(r => r.student.toString() === student._id.toString());
+      const isAllowed = sessionBatches.length === 0 || sessionBatches.includes(student.batch);
+      
+      return {
+        _id: student._id,
+        name: student.name,
+        rollNo: student.rollNo,
+        email: student.email,
+        batch: student.batch || 'Not Assigned',
+        status: record ? record.status : (isAllowed ? 'absent' : 'not_in_batch'),
+        distance: record ? record.distanceFromAnchor : null,
+        reviewed: record ? record.reviewedByProfessor : false,
+        isAllowed: isAllowed
+      };
+    });
+
+    const sorted = result.sort((a, b) => {
+      const order = { present: 0, absent: 1, flagged: 2, rejected: 3, not_in_batch: 4 };
+      return (order[a.status] || 5) - (order[b.status] || 5);
+    });
+
+    res.json({ 
+      count: sorted.length, 
+      students: sorted,
+      sessionBatches: sessionBatches
+    });
+  } catch (error) {
+    console.error('❌ Get students error:', error);
+    res.status(500).json({ error: 'Server error: ' + error.message });
+  }
+});
+
+// ============ FACULTY: Manual Attendance ============
+router.post('/session/:id/manual', authFaculty, async (req, res) => {
+  try {
+    const { studentId } = req.body;
+    const session = await AttendanceSession.findOne({ _id: req.params.id, faculty: req.faculty.id });
+    if (!session) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    const existing = await AttendanceRecord.findOne({ session: session._id, student: studentId });
+    if (existing) {
+      if (existing.status !== 'present') {
+        existing.status = 'present';
+        existing.finalStatus = 'present';
+        existing.reviewedByProfessor = true;
+        await existing.save();
+        return res.json({ message: 'Student marked present', record: existing });
+      }
+      return res.status(400).json({ error: 'Student already marked present' });
+    }
+
+    const student = await Student.findById(studentId);
+    if (!student) {
+      return res.status(404).json({ error: 'Student not found' });
+    }
+
+    const record = new AttendanceRecord({
+      session: session._id,
+      student: studentId,
+      studentLocation: { lat: 0, lng: 0 },
+      studentAccuracy: 0,
+      distanceFromAnchor: 0,
+      status: 'present',
+      reviewedByProfessor: true,
+      finalStatus: 'present'
+    });
+
+    await record.save();
+    res.json({ message: 'Attendance marked manually', record });
+  } catch (error) {
+    console.error('❌ Manual attendance error:', error);
+    res.status(500).json({ error: 'Server error: ' + error.message });
+  }
+});
+
+module.exports = router;
 module.exports = router;
