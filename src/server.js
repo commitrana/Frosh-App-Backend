@@ -63,7 +63,7 @@ app.use('/api/tickets', ticketRoutes); // Student register/my-tickets, Admin sca
 app.use('/api/bootcamp', bootcampRoutes); // Batch assignment: admin manage, student my-batch
 app.use('/api/faculty', facultyRoutes);
 app.use('/api/batches', batchRoutes);
-app.use('/api/attendance', attendanceRoutes); // Faculty: session start/live/flagged/review/end, Student: mark
+app.use('/api/attendance', attendanceRoutes); // Faculty: session start/live/flagged/review/end, Student: active/mark
 app.use('/api/faculty-timetable', facultyTimetableRoutes);
 // Protected test routes
 app.get('/api/society-profile', authSociety, (req, res) => {

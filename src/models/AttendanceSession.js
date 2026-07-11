@@ -12,6 +12,11 @@ const attendanceSessionSchema = new mongoose.Schema({
   day: { type: String, default: '', trim: true },
   slot: { type: String, default: '', trim: true },
 
+  // Which bootcamp batches this lecture is for (e.g. ['RedA', 'BlueB']).
+  // Empty array = visible to every batch (kept for backward compatibility
+  // with lectures created before batch-targeting existed).
+  batches: { type: [String], default: [] },
+
   // Professor's location at the moment the session was started — the "anchor"
   // every student's scan gets measured against.
   anchorLocation: {

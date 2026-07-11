@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const AttendanceSession = require('../models/AttendanceSession');
 const AttendanceRecord = require('../models/AttendanceRecord');
+const Student = require('../models/Student');
 const { authFaculty, authStudent } = require('../middleware/auth');
 
 // Distance between two lat/lng points, in meters.
@@ -23,7 +24,7 @@ function haversineMeters(a, b) {
 // ============ FACULTY: Start Attendance Session ============
 router.post('/session/start', authFaculty, async (req, res) => {
   try {
-    const { subject, venue, day, slot, professorLocation, professorAccuracy, radiusMeters } = req.body;
+    const { subject, venue, day, slot, professorLocation, professorAccuracy, radiusMeters, batches } = req.body;
 
     if (!subject || !professorLocation || professorLocation.lat == null || professorLocation.lng == null) {
       return res.status(400).json({ error: 'subject and professorLocation {lat, lng} are required' });
@@ -35,6 +36,7 @@ router.post('/session/start', authFaculty, async (req, res) => {
       venue: venue || '',
       day: day || '',
       slot: slot || '',
+      batches: Array.isArray(batches) ? batches : [],
       anchorLocation: { lat: professorLocation.lat, lng: professorLocation.lng },
       anchorAccuracy: professorAccuracy || 20,
       radiusMeters: radiusMeters || 30
@@ -95,7 +97,7 @@ router.get('/session/:id/live', authFaculty, async (req, res) => {
   }
 });
 
-// ============ FACULTY: Present Records (confirmed present, read-only list) ============
+// ============ FACULTY: Present Records (for the Present list) ============
 router.get('/session/:id/present', authFaculty, async (req, res) => {
   try {
     const session = await AttendanceSession.findOne({ _id: req.params.id, faculty: req.faculty.id });
@@ -212,11 +214,18 @@ router.get('/faculty/sessions', authFaculty, async (req, res) => {
 // Mark Attendance option when a faculty member has an active session running.
 router.get('/active', authStudent, async (req, res) => {
   try {
+    const student = await Student.findById(req.student.id).select('batch');
+
     const session = await AttendanceSession.findOne({ status: 'active' })
       .sort({ startedAt: -1 })
       .populate('faculty', 'name department');
 
-    if (!session) {
+    // Nothing active, or it's active but restricted to batches this
+    // student isn't part of — either way, nothing to show them.
+    const isForThisStudent =
+      session && (session.batches.length === 0 || session.batches.includes(student?.batch));
+
+    if (!session || !isForThisStudent) {
       return res.json({ session: null, alreadyMarked: false, myStatus: null });
     }
 
@@ -260,6 +269,13 @@ router.post('/mark', authStudent, async (req, res) => {
 
     if (session.status === 'ended') {
       return res.status(400).json({ error: 'This attendance session has already ended.' });
+    }
+
+    if (session.batches.length > 0) {
+      const student = await Student.findById(req.student.id).select('batch');
+      if (!student?.batch || !session.batches.includes(student.batch)) {
+        return res.status(403).json({ error: 'This class is not for your batch.' });
+      }
     }
 
     // Two-tier geofence check.
