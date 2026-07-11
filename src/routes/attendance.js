@@ -263,12 +263,46 @@ router.get('/session/:id/roster', authFaculty, async (req, res) => {
     }
 
     const sessionBatches = Array.isArray(session.batches) ? session.batches : [];
-    const studentFilter = sessionBatches.length > 0 ? { batch: { $in: sessionBatches } } : {};
 
-    const [students, records] = await Promise.all([
-      Student.find(studentFilter).select('name rollNo branch batch').sort({ name: 1 }),
-      AttendanceRecord.find({ session: session._id })
-    ]);
+    let students;
+    if (sessionBatches.length > 0) {
+      // Batch assignments live authoritatively in BootcampStudent (via email),
+      // with Student.batch as a secondary source — same priority as
+      // getStudentBatch() above. Pull from both so nobody gets missed.
+      const [bootcampEntries, directMatches] = await Promise.all([
+        BootcampStudent.find({ batch: { $in: sessionBatches } }).select('email batch'),
+        Student.find({ batch: { $in: sessionBatches } }).select('email batch')
+      ]);
+
+      const batchByEmail = {};
+      directMatches.forEach((s) => { batchByEmail[s.email] = s.batch; });
+      // BootcampStudent takes priority if both exist for the same email.
+      bootcampEntries.forEach((b) => { batchByEmail[b.email] = b.batch; });
+
+      const emails = Object.keys(batchByEmail);
+      const matchedStudents = await Student.find({ email: { $in: emails } })
+        .select('name rollNo branch batch email')
+        .sort({ name: 1 });
+
+      students = matchedStudents.map((s) => ({
+        _id: s._id,
+        name: s.name,
+        rollNo: s.rollNo,
+        branch: s.branch,
+        batch: batchByEmail[s.email] || s.batch
+      }));
+    } else {
+      const allStudents = await Student.find({}).select('name rollNo branch batch').sort({ name: 1 });
+      students = allStudents.map((s) => ({
+        _id: s._id,
+        name: s.name,
+        rollNo: s.rollNo,
+        branch: s.branch,
+        batch: s.batch
+      }));
+    }
+
+    const records = await AttendanceRecord.find({ session: session._id });
 
     const recordByStudentId = {};
     records.forEach((r) => {
