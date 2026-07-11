@@ -27,7 +27,7 @@ const attendanceSessionSchema = new mongoose.Schema({
   // Which bootcamp batches this specific lecture is open to (e.g. ["RedA", "BlueB"]).
   // Empty array = open to every student, regardless of batch (backward compatible
   // with lectures created before batch-restriction existed).
-  allowedBatches: {
+  batches: {
     type: [String],
     default: []
   },
