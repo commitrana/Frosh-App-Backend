@@ -65,6 +65,39 @@ router.post('/session/start', authFaculty, async (req, res) => {
   }
 });
 
+// ============ FACULTY: Today's Session For This Slot (if any) ============
+// Lets ClassDetails know whether a session for this exact day+slot was
+// already started today — so it can show "View Attendance" instead of
+// letting the professor start a second session for a class already run.
+// IMPORTANT: this must be registered BEFORE 'GET /session/:id' below —
+// otherwise Express matches "today" as the :id param and Mongoose throws
+// a CastError trying to treat "today" as an ObjectId.
+router.get('/session/today', authFaculty, async (req, res) => {
+  try {
+    const { day, slot } = req.query;
+    if (!day || !slot) {
+      return res.status(400).json({ error: 'day and slot query params are required' });
+    }
+
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date();
+    endOfDay.setHours(23, 59, 59, 999);
+
+    const session = await AttendanceSession.findOne({
+      faculty: req.faculty.id,
+      day,
+      slot,
+      startedAt: { $gte: startOfDay, $lte: endOfDay }
+    }).sort({ startedAt: -1 });
+
+    res.json({ session: session || null });
+  } catch (error) {
+    console.error('❌ Get today session error:', error);
+    res.status(500).json({ error: 'Server error: ' + error.message });
+  }
+});
+
 // ============ FACULTY: Get Session Detail (for QR display) ============
 router.get('/session/:id', authFaculty, async (req, res) => {
   try {
@@ -219,6 +252,97 @@ router.get('/faculty/sessions', authFaculty, async (req, res) => {
   }
 });
 
+// ============ FACULTY: Full Roster For This Session (present + absent) ============
+// Every student in the session's allowed batches, with their current
+// attendance status — powers the "Manage Attendance" search + manual-mark screen.
+router.get('/session/:id/roster', authFaculty, async (req, res) => {
+  try {
+    const session = await AttendanceSession.findOne({ _id: req.params.id, faculty: req.faculty.id });
+    if (!session) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    const sessionBatches = Array.isArray(session.batches) ? session.batches : [];
+    const studentFilter = sessionBatches.length > 0 ? { batch: { $in: sessionBatches } } : {};
+
+    const [students, records] = await Promise.all([
+      Student.find(studentFilter).select('name rollNo branch batch').sort({ name: 1 }),
+      AttendanceRecord.find({ session: session._id })
+    ]);
+
+    const recordByStudentId = {};
+    records.forEach((r) => {
+      recordByStudentId[r.student.toString()] = r;
+    });
+
+    const roster = students.map((s) => {
+      const record = recordByStudentId[s._id.toString()];
+      return {
+        _id: s._id,
+        name: s.name,
+        rollNo: s.rollNo,
+        branch: s.branch,
+        batch: s.batch,
+        status: record ? record.status : 'absent',
+        markedManually: record ? !!record.markedManually : false,
+        recordId: record ? record._id : null
+      };
+    });
+
+    res.json({ count: roster.length, students: roster });
+  } catch (error) {
+    console.error('❌ Get session roster error:', error);
+    res.status(500).json({ error: 'Server error: ' + error.message });
+  }
+});
+
+// ============ FACULTY: Manually Mark a Student Present ============
+// For students who were physically present but didn't scan (no signal,
+// forgot, phone died, etc). Creates or updates their record to 'present'.
+router.post('/session/:id/mark-manual', authFaculty, async (req, res) => {
+  try {
+    const { studentId } = req.body;
+    if (!studentId) {
+      return res.status(400).json({ error: 'studentId is required' });
+    }
+
+    const session = await AttendanceSession.findOne({ _id: req.params.id, faculty: req.faculty.id });
+    if (!session) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    let record = await AttendanceRecord.findOne({ session: session._id, student: studentId });
+
+    if (record) {
+      if (record.status === 'present' && !record.markedManually) {
+        return res.status(400).json({ error: 'This student already scanned and is marked present.' });
+      }
+      record.status = 'present';
+      record.markedManually = true;
+      record.reviewedByProfessor = true;
+      record.finalStatus = 'present';
+      await record.save();
+    } else {
+      record = new AttendanceRecord({
+        session: session._id,
+        student: studentId,
+        status: 'present',
+        markedManually: true,
+        reviewedByProfessor: true,
+        finalStatus: 'present'
+      });
+      await record.save();
+    }
+
+    console.log(`✅ Student ${studentId} manually marked present for session ${session._id}`);
+
+    res.json({ message: 'Marked present', record });
+  } catch (error) {
+    console.error('❌ Manual mark error:', error);
+    res.status(500).json({ error: 'Server error: ' + error.message });
+  }
+});
+
 // ============ STUDENT: Get Currently Active Session (if any) ============
 // Powers the "Live Class" card in the Bootcamp screen — only shows a
 // Mark Attendance option when a faculty member has an active session running.
@@ -230,12 +354,21 @@ router.get('/active', authStudent, async (req, res) => {
       .sort({ startedAt: -1 })
       .populate('faculty', 'name department');
 
+    if (!session) {
+      return res.json({ session: null, alreadyMarked: false, myStatus: null });
+    }
+
+    // Defensive fallback: sessions created before the batches field existed
+    // won't have it on the document at all (Mongoose defaults only apply to
+    // brand-new documents, not ones already sitting in the DB).
+    const sessionBatches = Array.isArray(session.batches) ? session.batches : [];
+
     // Nothing active, or it's active but restricted to batches this
     // student isn't part of — either way, nothing to show them.
     const isForThisStudent =
-      session && (session.batches.length === 0 || (studentBatch && session.batches.includes(studentBatch)));
+      sessionBatches.length === 0 || (studentBatch && sessionBatches.includes(studentBatch));
 
-    if (!session || !isForThisStudent) {
+    if (!isForThisStudent) {
       return res.json({ session: null, alreadyMarked: false, myStatus: null });
     }
 
@@ -262,123 +395,16 @@ router.get('/active', authStudent, async (req, res) => {
     res.status(500).json({ error: 'Server error: ' + error.message });
   }
 });
-// ============ FACULTY: Manual Attendance ============
-router.post('/session/:id/manual', authFaculty, async (req, res) => {
-  try {
-    const { studentId } = req.body;
-    const session = await AttendanceSession.findOne({ _id: req.params.id, faculty: req.faculty.id });
-    if (!session) {
-      return res.status(404).json({ error: 'Session not found' });
-    }
 
-    // ✅ Check if already marked
-    const existing = await AttendanceRecord.findOne({ session: session._id, student: studentId });
-    if (existing) {
-      // ✅ If already marked but status is not present, update to present
-      if (existing.status !== 'present') {
-        existing.status = 'present';
-        existing.finalStatus = 'present';
-        existing.reviewedByProfessor = true;
-        await existing.save();
-        return res.json({ message: 'Student marked present', record: existing });
-      }
-      return res.status(400).json({ error: 'Student already marked present' });
-    }
-
-    // ✅ Check if student exists
-    const student = await Student.findById(studentId);
-    if (!student) {
-      return res.status(404).json({ error: 'Student not found' });
-    }
-
-    // ✅ Create manual attendance record
-    const record = new AttendanceRecord({
-      session: session._id,
-      student: studentId,
-      studentLocation: { lat: 0, lng: 0 },
-      studentAccuracy: 0,
-      distanceFromAnchor: 0,
-      status: 'present',
-      reviewedByProfessor: true,
-      finalStatus: 'present'
-    });
-
-    await record.save();
-    res.json({ message: 'Attendance marked manually', record });
-  } catch (error) {
-    console.error('❌ Manual attendance error:', error);
-    res.status(500).json({ error: 'Server error: ' + error.message });
-  }
-});
-
-// ============ FACULTY: Get All Students with Attendance Status ============
-router.get('/session/:id/students', authFaculty, async (req, res) => {
-  try {
-    const session = await AttendanceSession.findOne({ _id: req.params.id, faculty: req.faculty.id });
-    if (!session) {
-      return res.status(404).json({ error: 'Session not found' });
-    }
-
-    // ✅ Get ALL students from ALL batches (not just session batches)
-    // Session batches = which batches were allowed to attend this class
-    const sessionBatches = session.batches.length > 0 ? session.batches : [];
-    
-    // Get all students (not filtered by batch - we want ALL students)
-    const allStudents = await Student.find({}).select('name rollNo email batch');
-
-    // ✅ Get attendance records for this session
-    const records = await AttendanceRecord.find({ session: session._id });
-
-    // ✅ Merge data - mark absent for students who didn't scan
-    const result = allStudents.map(student => {
-      const record = records.find(r => r.student.toString() === student._id.toString());
-      const isAllowed = sessionBatches.length === 0 || sessionBatches.includes(student.batch);
-      
-      return {
-        _id: student._id,
-        name: student.name,
-        rollNo: student.rollNo,
-        email: student.email,
-        batch: student.batch || 'Not Assigned',
-        // ✅ If student's batch was allowed but didn't scan = absent
-        // ✅ If student's batch was NOT allowed = 'not_in_batch'
-        status: record ? record.status : (isAllowed ? 'absent' : 'not_in_batch'),
-        distance: record ? record.distanceFromAnchor : null,
-        reviewed: record ? record.reviewedByProfessor : false,
-        isAllowed: isAllowed
-      };
-    });
-
-    // ✅ Sort: Present first, then Absent, then Not in batch
-    const sorted = result.sort((a, b) => {
-      const order = { present: 0, absent: 1, flagged: 2, rejected: 3, not_in_batch: 4 };
-      return (order[a.status] || 5) - (order[b.status] || 5);
-    });
-
-    res.json({ 
-      count: sorted.length, 
-      students: sorted,
-      sessionBatches: sessionBatches
-    });
-  } catch (error) {
-    console.error('❌ Get students error:', error);
-    res.status(500).json({ error: 'Server error: ' + error.message });
-  }
-});
-// ============ STUDENT: Mark Attendance ============
+// ============ STUDENT: Scan QR & Mark Attendance ============
 router.post('/mark', authStudent, async (req, res) => {
   try {
     const { qrToken, studentGPS, studentAccuracy } = req.body;
-
-    console.log('📨 Mark attendance request:');
-    console.log('   QR Token:', qrToken);
-    console.log('   Student GPS:', studentGPS);
 
     if (!qrToken || !studentGPS || studentGPS.lat == null || studentGPS.lng == null) {
       return res.status(400).json({ error: 'qrToken and studentGPS {lat, lng} are required' });
     }
 
-    // Find session by QR token
     const session = await AttendanceSession.findOne({ qrToken });
     if (!session) {
       return res.status(404).json({ error: 'Invalid QR code. This attendance session was not found.' });
@@ -388,38 +414,21 @@ router.post('/mark', authStudent, async (req, res) => {
       return res.status(400).json({ error: 'This attendance session has already ended.' });
     }
 
-    // Get student's batch
-    const student = await Student.findById(req.student.id).select('batch');
-    const studentBatch = student?.batch || null;
+    // Defensive fallback — see note in GET /active above.
+    const sessionBatches = Array.isArray(session.batches) ? session.batches : [];
 
-    // Batch check
-    if (session.batches.length > 0) {
-      if (!studentBatch || !session.batches.includes(studentBatch)) {
-        return res.status(403).json({ 
-          error: 'This class is not for your batch.',
-          yourBatch: studentBatch,
-          allowedBatches: session.batches
-        });
+    if (sessionBatches.length > 0) {
+      const studentBatch = await getStudentBatch(req.student.email, req.student.id);
+      if (!studentBatch || !sessionBatches.includes(studentBatch)) {
+        return res.status(403).json({ error: 'This class is not for your batch.' });
       }
     }
 
-    // Check if already marked
-    const existingRecord = await AttendanceRecord.findOne({
-      session: session._id,
-      student: req.student.id
-    });
-
-    if (existingRecord) {
-      return res.status(400).json({ 
-        error: 'You have already marked attendance for this session.',
-        status: existingRecord.status
-      });
-    }
-
-    // Calculate distance
-    const distance = haversineMeters(session.anchorLocation, studentGPS);
+    // Two-tier geofence check.
     const accuracy = studentAccuracy || 20;
-    const effectiveRadius = session.radiusMeters + Math.min(accuracy, 50) + Math.min(session.anchorAccuracy, 30);
+    const distance = haversineMeters(session.anchorLocation, studentGPS);
+    const effectiveRadius =
+      session.radiusMeters + Math.min(accuracy, 50) + Math.min(session.anchorAccuracy, 30);
 
     let status;
     if (distance <= effectiveRadius) {
@@ -441,16 +450,20 @@ router.post('/mark', authStudent, async (req, res) => {
 
     await record.save();
 
-    console.log(`✅ Attendance marked: ${req.student.id} -> ${status} (${Math.round(distance)}m)`);
+    console.log(`✅ Attendance marked: student ${req.student.id} -> ${status} (${Math.round(distance)}m)`);
 
     res.status(201).json({
-      message: status === 'present' ? '✅ Marked present!' :
-               status === 'flagged' ? '⚠️ Marked — pending professor review' :
-               "❌ Couldn't verify your location. Please ask your professor to mark you manually.",
+      message:
+        status === 'present'
+          ? 'Marked present!'
+          : status === 'flagged'
+          ? 'Marked present — pending professor review'
+          : "Couldn't verify your location. Please ask your professor to mark you manually.",
       status,
       distanceFromAnchor: Math.round(distance)
     });
   } catch (error) {
+    // Duplicate key = this student already scanned for this session
     if (error.code === 11000) {
       return res.status(400).json({ error: 'You have already marked attendance for this session.' });
     }
@@ -459,97 +472,4 @@ router.post('/mark', authStudent, async (req, res) => {
   }
 });
 
-// ============ FACULTY: Get All Students with Attendance Status ============
-router.get('/session/:id/students', authFaculty, async (req, res) => {
-  try {
-    const session = await AttendanceSession.findOne({ _id: req.params.id, faculty: req.faculty.id });
-    if (!session) {
-      return res.status(404).json({ error: 'Session not found' });
-    }
-
-    // ✅ Get ALL students
-    const allStudents = await Student.find({}).select('name rollNo email batch');
-    const records = await AttendanceRecord.find({ session: session._id });
-
-    const sessionBatches = session.batches.length > 0 ? session.batches : [];
-
-    const result = allStudents.map(student => {
-      const record = records.find(r => r.student.toString() === student._id.toString());
-      const isAllowed = sessionBatches.length === 0 || sessionBatches.includes(student.batch);
-      
-      return {
-        _id: student._id,
-        name: student.name,
-        rollNo: student.rollNo,
-        email: student.email,
-        batch: student.batch || 'Not Assigned',
-        status: record ? record.status : (isAllowed ? 'absent' : 'not_in_batch'),
-        distance: record ? record.distanceFromAnchor : null,
-        reviewed: record ? record.reviewedByProfessor : false,
-        isAllowed: isAllowed
-      };
-    });
-
-    const sorted = result.sort((a, b) => {
-      const order = { present: 0, absent: 1, flagged: 2, rejected: 3, not_in_batch: 4 };
-      return (order[a.status] || 5) - (order[b.status] || 5);
-    });
-
-    res.json({ 
-      count: sorted.length, 
-      students: sorted,
-      sessionBatches: sessionBatches
-    });
-  } catch (error) {
-    console.error('❌ Get students error:', error);
-    res.status(500).json({ error: 'Server error: ' + error.message });
-  }
-});
-
-// ============ FACULTY: Manual Attendance ============
-router.post('/session/:id/manual', authFaculty, async (req, res) => {
-  try {
-    const { studentId } = req.body;
-    const session = await AttendanceSession.findOne({ _id: req.params.id, faculty: req.faculty.id });
-    if (!session) {
-      return res.status(404).json({ error: 'Session not found' });
-    }
-
-    const existing = await AttendanceRecord.findOne({ session: session._id, student: studentId });
-    if (existing) {
-      if (existing.status !== 'present') {
-        existing.status = 'present';
-        existing.finalStatus = 'present';
-        existing.reviewedByProfessor = true;
-        await existing.save();
-        return res.json({ message: 'Student marked present', record: existing });
-      }
-      return res.status(400).json({ error: 'Student already marked present' });
-    }
-
-    const student = await Student.findById(studentId);
-    if (!student) {
-      return res.status(404).json({ error: 'Student not found' });
-    }
-
-    const record = new AttendanceRecord({
-      session: session._id,
-      student: studentId,
-      studentLocation: { lat: 0, lng: 0 },
-      studentAccuracy: 0,
-      distanceFromAnchor: 0,
-      status: 'present',
-      reviewedByProfessor: true,
-      finalStatus: 'present'
-    });
-
-    await record.save();
-    res.json({ message: 'Attendance marked manually', record });
-  } catch (error) {
-    console.error('❌ Manual attendance error:', error);
-    res.status(500).json({ error: 'Server error: ' + error.message });
-  }
-});
-
-module.exports = router;
 module.exports = router;
