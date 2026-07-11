@@ -262,7 +262,77 @@ router.get('/active', authStudent, async (req, res) => {
     res.status(500).json({ error: 'Server error: ' + error.message });
   }
 });
+// ============ FACULTY: Manual Attendance ============
+router.post('/session/:id/manual', authFaculty, async (req, res) => {
+  try {
+    const { studentId } = req.body;
+    const session = await AttendanceSession.findOne({ _id: req.params.id, faculty: req.faculty.id });
+    if (!session) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
 
+    // ✅ Check if already marked
+    const existing = await AttendanceRecord.findOne({ session: session._id, student: studentId });
+    if (existing) {
+      return res.status(400).json({ error: 'Student already marked' });
+    }
+
+    // ✅ Create manual attendance record
+    const record = new AttendanceRecord({
+      session: session._id,
+      student: studentId,
+      studentLocation: { lat: 0, lng: 0 },
+      studentAccuracy: 0,
+      distanceFromAnchor: 0,
+      status: 'present',
+      reviewedByProfessor: true,
+      finalStatus: 'present'
+    });
+
+    await record.save();
+    res.json({ message: 'Attendance marked manually', record });
+  } catch (error) {
+    console.error('❌ Manual attendance error:', error);
+    res.status(500).json({ error: 'Server error: ' + error.message });
+  }
+});
+
+// ============ FACULTY: Get All Students with Attendance Status ============
+router.get('/session/:id/students', authFaculty, async (req, res) => {
+  try {
+    const session = await AttendanceSession.findOne({ _id: req.params.id, faculty: req.faculty.id });
+    if (!session) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    // ✅ Get all students in the allowed batches
+    const batchFilter = session.batches.length > 0 ? { batch: { $in: session.batches } } : {};
+    const students = await Student.find(batchFilter).select('name rollNo email batch');
+
+    // ✅ Get attendance records for this session
+    const records = await AttendanceRecord.find({ session: session._id });
+
+    // ✅ Merge data
+    const result = students.map(student => {
+      const record = records.find(r => r.student.toString() === student._id.toString());
+      return {
+        _id: student._id,
+        name: student.name,
+        rollNo: student.rollNo,
+        email: student.email,
+        batch: student.batch,
+        status: record ? record.status : 'absent',
+        distance: record ? record.distanceFromAnchor : null,
+        reviewed: record ? record.reviewedByProfessor : false
+      };
+    });
+
+    res.json({ count: result.length, students: result });
+  } catch (error) {
+    console.error('❌ Get students error:', error);
+    res.status(500).json({ error: 'Server error: ' + error.message });
+  }
+});
 // ============ STUDENT: Scan QR & Mark Attendance ============
 router.post('/mark', authStudent, async (req, res) => {
   try {
