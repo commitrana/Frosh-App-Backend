@@ -95,6 +95,28 @@ router.get('/session/:id/live', authFaculty, async (req, res) => {
   }
 });
 
+// ============ FACULTY: Present Records (confirmed present, read-only list) ============
+router.get('/session/:id/present', authFaculty, async (req, res) => {
+  try {
+    const session = await AttendanceSession.findOne({ _id: req.params.id, faculty: req.faculty.id });
+    if (!session) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    const records = await AttendanceRecord.find({
+      session: session._id,
+      status: 'present'
+    })
+      .populate('student', 'name rollNo branch')
+      .sort({ scannedAt: 1 });
+
+    res.json({ count: records.length, records });
+  } catch (error) {
+    console.error('❌ Get present records error:', error);
+    res.status(500).json({ error: 'Server error: ' + error.message });
+  }
+});
+
 // ============ FACULTY: Flagged/Rejected Records (for review) ============
 router.get('/session/:id/flagged', authFaculty, async (req, res) => {
   try {
