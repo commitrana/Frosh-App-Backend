@@ -159,6 +159,11 @@ router.get('/profile', authMember, async (req, res) => {
         rollNo: member.rollNo,
         societyName: member.societyName,
         slotNumber: member.slotNumber,
+        status: member.status || 'pending',
+        verifiedAt: member.verifiedAt || null,
+        verifiedBy: member.verifiedBy || null,
+        rejectedAt: member.rejectedAt || null,
+        rejectedBy: member.rejectedBy || null,
         createdAt: member.createdAt
       }
     });
@@ -187,6 +192,11 @@ router.get('/society-members', authSociety, async (req, res) => {
         branch: m.branch,
         rollNo: m.rollNo,
         slotNumber: m.slotNumber,
+        status: m.status || 'pending',
+        verifiedAt: m.verifiedAt || null,
+        verifiedBy: m.verifiedBy || null,
+        rejectedAt: m.rejectedAt || null,
+        rejectedBy: m.rejectedBy || null,
         createdAt: m.createdAt
       }))
     });

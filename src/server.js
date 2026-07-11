@@ -3,13 +3,21 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const dotenv = require('dotenv');
 const dns = require('dns');
+const facultyRoutes = require('./routes/faculty');
+const batchRoutes = require('./routes/batches');
+const attendanceRoutes = require('./routes/attendance');
 
-// Import routes
+// Import routes - these are in the src/routes folder
 const authRoutes = require('./routes/auth');
 const adminRoutes = require('./routes/admin');
 const memberRoutes = require('./routes/member');
 const slotsRoutes = require('./routes/slots');
+const studentRoutes = require('./routes/students');  // Student routes in src/routes/
+const eventRoutes = require('./routes/events');
+const ticketRoutes = require('./routes/tickets');
+const bootcampRoutes = require('./routes/bootcamp');
 const { authSociety, authAdmin } = require('./middleware/auth');
+const facultyTimetableRoutes = require('./routes/facultyTimetable');
 
 // Force Node.js to use system DNS
 dns.setDefaultResultOrder('ipv4first');
@@ -49,7 +57,14 @@ app.use('/api/auth', authRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/member', memberRoutes);
 app.use('/api/society/slots', slotsRoutes);
-
+app.use('/api/admin', studentRoutes);  // Student routes will be under /api/admin
+app.use('/api/events', eventRoutes);   // Public GET for app, /api/events/admin/* for admin management
+app.use('/api/tickets', ticketRoutes); // Student register/my-tickets, Admin scan/stats
+app.use('/api/bootcamp', bootcampRoutes); // Batch assignment: admin manage, student my-batch
+app.use('/api/faculty', facultyRoutes);
+app.use('/api/batches', batchRoutes);
+app.use('/api/attendance', attendanceRoutes); // Faculty: session start/live/flagged/review/end, Student: mark
+app.use('/api/faculty-timetable', facultyTimetableRoutes);
 // Protected test routes
 app.get('/api/society-profile', authSociety, (req, res) => {
   res.json({
@@ -113,7 +128,8 @@ app.get('/', (req, res) => {
         'GET /api/test': 'Test connection',
         'GET /api/db-status': 'Check database status',
         'POST /api/auth/login': 'Society Login',
-        'POST /api/member/login': 'Member Login'
+        'POST /api/member/login': 'Member Login',
+        'GET /api/events': 'Get All Events (app) - supports ?status=live|upcoming|past'
       },
       'Admin': {
         'POST /api/admin/login': 'Admin Login',
@@ -121,7 +137,37 @@ app.get('/', (req, res) => {
         'GET /api/admin/societies': 'List All Societies',
         'PUT /api/admin/update-password/:id': 'Update Society Password',
         'DELETE /api/admin/delete-society/:id': 'Delete Society',
-        'GET /api/admin/society-members/:societyId': 'Get Society Members'
+        'GET /api/admin/society-members/:societyId': 'Get Society Members',
+        // Student management endpoints
+        'GET /api/admin/students': 'Get All Students (with pagination)',
+        'GET /api/admin/students/all': 'Get All Students (no pagination)',
+        'PUT /api/admin/students/:id': 'Update Student',
+        'PUT /api/admin/students/bulk': 'Bulk Update Students',
+        'DELETE /api/admin/students/:id': 'Delete Student',
+        'DELETE /api/admin/students/bulk': 'Bulk Delete Students',
+        'GET /api/admin/students/export': 'Export Students to CSV',
+        'POST /api/admin/students/import': 'Import Students from CSV',
+        // Event management endpoints
+        'GET /api/events/admin/all': 'Get All Events (admin)',
+        'POST /api/events/admin/create': 'Create Event',
+        'PUT /api/events/admin/:id': 'Update Event',
+        'PUT /api/events/admin/:id/status': 'Update Event Status (live/upcoming/past)',
+        'DELETE /api/events/admin/:id': 'Delete Event',
+        // Ticketing endpoints
+        'POST /api/tickets/scan': 'Scan a student ticket QR code',
+        'GET /api/tickets/stats/:eventId': 'Get ticket stats for an event (issued/scanned/capacity)',
+        'GET /api/tickets/event/:eventId': 'Get all registrations (tickets) for an event',
+        // Bootcamp endpoints
+        'GET /api/bootcamp/admin/batches': 'Get the list of all 20 batch codes',
+        'GET /api/bootcamp/admin/list': 'Get the full bootcamp roster (with verified flag)',
+        'POST /api/bootcamp/admin/import': 'Bulk import bootcamp roster from CSV (name, email, phoneNo, batch)',
+        'POST /api/bootcamp/admin/shuffle': 'Randomly redistribute everyone in the roster across the 20 batches',
+        'PUT /api/bootcamp/admin/:id': "Edit a bootcamp student's batch"
+      },
+      'Student (Auth Required)': {
+        'POST /api/tickets/register': 'Register for an event (issues a ticket)',
+        'GET /api/tickets/my-tickets': 'Get all of my tickets',
+        'GET /api/bootcamp/my-batch': 'Get my bootcamp batch'
       },
       'Society (Auth Required)': {
         'POST /api/member/create': 'Create Members',
@@ -146,6 +192,7 @@ app.use((err, req, res, next) => {
     message: err.message 
   });
 });
+app.use('/api/faculty-timetable', facultyTimetableRoutes);
 
 // 404 handler
 app.use((req, res) => {
@@ -165,4 +212,5 @@ app.listen(PORT, () => {
   console.log(`🔐 Society Login: POST http://localhost:${PORT}/api/auth/login`);
   console.log(`👤 Member Login: POST http://localhost:${PORT}/api/member/login`);
   console.log(`📊 All endpoints: http://localhost:${PORT}/`);
+  console.log(`👨‍🎓 Student endpoints: http://localhost:${PORT}/api/admin/students`);
 });

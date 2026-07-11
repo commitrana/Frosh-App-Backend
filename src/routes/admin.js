@@ -171,13 +171,14 @@ router.put('/update-password/:id', async (req, res) => {
 });
 
 // Admin gets all members of a specific society
+// Admin gets all members of a specific society
+// Admin gets all members of a specific society
 router.get('/society-members/:societyId', async (req, res) => {
   try {
     console.log('📨 Get society members request for society:', req.params.societyId);
     
     const { societyId } = req.params;
     
-    // Check if society exists
     const society = await Society.findById(societyId);
     if (!society) {
       return res.status(404).json({ error: 'Society not found' });
@@ -197,6 +198,11 @@ router.get('/society-members/:societyId', async (req, res) => {
         branch: m.branch,
         rollNo: m.rollNo,
         slotNumber: m.slotNumber,
+        status: m.status || 'pending',  // ✅ ADD STATUS
+        verifiedAt: m.verifiedAt || null,
+        verifiedBy: m.verifiedBy || null,
+        rejectedAt: m.rejectedAt || null,
+        rejectedBy: m.rejectedBy || null,
         createdAt: m.createdAt
       }))
     });
@@ -268,5 +274,148 @@ router.delete('/delete-society/:id', async (req, res) => {
     res.status(500).json({ error: 'Server error' });
   }
 });
+// ============ ADMIN VERIFIES MEMBER ============
+// ============ ADMIN VERIFIES MEMBER ============
+// ============ ADMIN VERIFIES MEMBER ============
+// ============ ADMIN VERIFIES MEMBER ============
+// ============ ADMIN VERIFIES MEMBER ============
+router.post('/verify-member/:memberId', async (req, res) => {
+  try {
+    console.log('📨 Verify member request:', req.params.memberId);
+    
+    const { memberId } = req.params;
+    const { verifiedBy } = req.body;
 
+    if (!memberId) {
+      return res.status(400).json({ error: 'Member ID is required' });
+    }
+
+    // ✅ Check if member exists
+    const member = await Member.findById(memberId);
+    if (!member) {
+      console.log('❌ Member not found:', memberId);
+      return res.status(404).json({ error: 'Member not found' });
+    }
+
+    // ✅ Check if already verified
+    if (member.status === 'verified') {
+      console.log('⚠️ Member already verified:', member.email);
+      return res.status(400).json({ 
+        error: 'Member already verified',
+        member: {
+          id: member._id,
+          name: member.name,
+          email: member.email,
+          status: member.status
+        }
+      });
+    }
+
+    // ✅ Use findByIdAndUpdate to avoid pre-save hook issues
+    const updatedMember = await Member.findByIdAndUpdate(
+      memberId,
+      {
+        $set: {
+          status: 'verified',
+          verifiedAt: new Date(),
+          verifiedBy: verifiedBy || 'Admin',
+          updatedAt: new Date()
+        }
+      },
+      { new: true, runValidators: false }
+    );
+
+    console.log('✅ Member verified successfully:', updatedMember.email);
+
+    res.json({
+      success: true,
+      message: 'Member verified successfully!',
+      member: {
+        id: updatedMember._id,
+        name: updatedMember.name,
+        email: updatedMember.email,
+        branch: updatedMember.branch,
+        rollNo: updatedMember.rollNo,
+        societyName: updatedMember.societyName,
+        slotNumber: updatedMember.slotNumber,
+        status: updatedMember.status,
+        verifiedAt: updatedMember.verifiedAt,
+        verifiedBy: updatedMember.verifiedBy
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Verify member error:', error);
+    res.status(500).json({ error: 'Server error: ' + error.message });
+  }
+});
+
+// ============ ADMIN DECLINES MEMBER (Optional - mark as not verified) ============
+// ============ ADMIN DECLINES MEMBER ============
+// ============ ADMIN DECLINES MEMBER ============
+// ============ ADMIN DECLINES MEMBER ============
+router.post('/decline-member/:memberId', async (req, res) => {
+  try {
+    console.log('📨 Decline member request:', req.params.memberId);
+    
+    const { memberId } = req.params;
+
+    if (!memberId) {
+      return res.status(400).json({ error: 'Member ID is required' });
+    }
+
+    const member = await Member.findById(memberId);
+    if (!member) {
+      console.log('❌ Member not found:', memberId);
+      return res.status(404).json({ error: 'Member not found' });
+    }
+
+    if (member.status === 'verified') {
+      console.log('⚠️ Member already verified, cannot decline:', member.email);
+      return res.status(400).json({ 
+        error: 'Member is already verified. Cannot decline.'
+      });
+    }
+
+    if (member.status === 'rejected') {
+      console.log('⚠️ Member already rejected:', member.email);
+      return res.status(400).json({ 
+        error: 'Member is already rejected.'
+      });
+    }
+
+    // ✅ Use findByIdAndUpdate to avoid pre-save hook issues
+    const updatedMember = await Member.findByIdAndUpdate(
+      memberId,
+      {
+        $set: {
+          status: 'rejected',
+          rejectedAt: new Date(),
+          rejectedBy: 'Admin',
+          updatedAt: new Date()
+        }
+      },
+      { new: true, runValidators: false }
+    );
+
+    console.log('✅ Member rejected:', updatedMember.email);
+
+    res.json({
+      success: true,
+      message: 'Member rejected. They will need to contact admin for verification.',
+      member: {
+        id: updatedMember._id,
+        name: updatedMember.name,
+        email: updatedMember.email,
+        status: updatedMember.status,
+        rejectedAt: updatedMember.rejectedAt,
+        rejectedBy: updatedMember.rejectedBy
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Decline member error:', error);
+    res.status(500).json({ error: 'Server error: ' + error.message });
+  }
+});
 module.exports = router;

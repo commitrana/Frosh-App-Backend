@@ -7,27 +7,26 @@ const MemberSchema = new mongoose.Schema({
     required: true,
     trim: true
   },
+  email: {
+    type: String,
+    required: true,
+    unique: true,
+    trim: true,
+    lowercase: true
+  },
+  password: {
+    type: String,
+    required: true
+  },
   branch: {
     type: String,
     required: true,
-    enum: ['CSE', 'ECE', 'ME', 'CE', 'EE', 'IT', 'Other']
+    trim: true
   },
   rollNo: {
     type: String,
     required: true,
     trim: true
-  },
-  email: {
-    type: String,
-    required: true,
-    unique: true,
-    lowercase: true,
-    trim: true
-  },
-  password: {
-    type: String,
-    required: true,
-    minlength: 6
   },
   societyId: {
     type: mongoose.Schema.Types.ObjectId,
@@ -43,34 +42,64 @@ const MemberSchema = new mongoose.Schema({
     required: true,
     enum: [1, 2]
   },
+  status: {
+    type: String,
+    enum: ['pending', 'verified', 'rejected'],
+    default: 'pending'
+  },
+  verifiedAt: {
+    type: Date,
+    default: null
+  },
+  verifiedBy: {
+    type: String,
+    default: null
+  },
+  rejectedAt: {
+    type: Date,
+    default: null
+  },
+  rejectedBy: {
+    type: String,
+    default: null
+  },
   createdAt: {
+    type: Date,
+    default: Date.now
+  },
+  updatedAt: {
     type: Date,
     default: Date.now
   }
 });
 
-MemberSchema.pre('save', async function () {
-  if (!this.isModified('password')) return;
-  if (this.password && this.password.startsWith('$2b$')) return;
-
-  console.log('🔐 Hashing password for member:', this.email);
-  const salt = await bcrypt.genSalt(10);
-  this.password = await bcrypt.hash(this.password, salt);
-  console.log('🔐 Hash created for member:', this.email);
+// Hash password before saving
+MemberSchema.pre('save', function(next) {
+  const member = this;
+  if (!member.isModified('password')) return next();
+  if (member.password && member.password.startsWith('$2b$')) return next();
+  
+  bcrypt.genSalt(10, function(err, salt) {
+    if (err) return next(err);
+    bcrypt.hash(member.password, salt, function(err, hash) {
+      if (err) return next(err);
+      member.password = hash;
+      next();
+    });
+  });
 });
 
-// Compare password method
-MemberSchema.methods.comparePassword = function(candidatePassword) {
-  return new Promise((resolve, reject) => {
-    if (this.password && this.password.startsWith('$2b$')) {
-      bcrypt.compare(candidatePassword, this.password, function(err, isMatch) {
-        if (err) return reject(err);
-        resolve(isMatch);
-      });
-    } else {
-      resolve(candidatePassword === this.password);
-    }
-  });
+// Compare password
+MemberSchema.methods.comparePassword = async function(candidatePassword) {
+  if (this.password && this.password.startsWith('$2b$')) {
+    return await bcrypt.compare(candidatePassword, this.password);
+  }
+  return candidatePassword === this.password;
 };
+
+// Indexes
+MemberSchema.index({ email: 1 });
+MemberSchema.index({ societyId: 1 });
+MemberSchema.index({ status: 1 });
 
 module.exports = mongoose.model('Member', MemberSchema);
