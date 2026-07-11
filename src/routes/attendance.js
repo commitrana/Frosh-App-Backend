@@ -2,8 +2,18 @@ const express = require('express');
 const router = express.Router();
 const AttendanceSession = require('../models/AttendanceSession');
 const AttendanceRecord = require('../models/AttendanceRecord');
+const BootcampStudent = require('../models/BootcampStudent');
 const Student = require('../models/Student');
 const { authFaculty, authStudent } = require('../middleware/auth');
+
+// Fetch the student's batch — checks BootcampStudent first (the authoritative
+// source for batch assignments), falls back to Student.batch if not found there.
+const getStudentBatch = async (email, studentId) => {
+  const bootcampEntry = await BootcampStudent.findOne({ email }).select('batch');
+  if (bootcampEntry) return bootcampEntry.batch;
+  const studentEntry = await Student.findById(studentId).select('batch');
+  return studentEntry?.batch ?? null;
+};
 
 // Distance between two lat/lng points, in meters.
 function haversineMeters(a, b) {
@@ -214,7 +224,7 @@ router.get('/faculty/sessions', authFaculty, async (req, res) => {
 // Mark Attendance option when a faculty member has an active session running.
 router.get('/active', authStudent, async (req, res) => {
   try {
-    const student = await Student.findById(req.student.id).select('batch');
+    const studentBatch = await getStudentBatch(req.student.email, req.student.id);
 
     const session = await AttendanceSession.findOne({ status: 'active' })
       .sort({ startedAt: -1 })
@@ -223,7 +233,7 @@ router.get('/active', authStudent, async (req, res) => {
     // Nothing active, or it's active but restricted to batches this
     // student isn't part of — either way, nothing to show them.
     const isForThisStudent =
-      session && (session.batches.length === 0 || session.batches.includes(student?.batch));
+      session && (session.batches.length === 0 || (studentBatch && session.batches.includes(studentBatch)));
 
     if (!session || !isForThisStudent) {
       return res.json({ session: null, alreadyMarked: false, myStatus: null });
@@ -272,8 +282,8 @@ router.post('/mark', authStudent, async (req, res) => {
     }
 
     if (session.batches.length > 0) {
-      const student = await Student.findById(req.student.id).select('batch');
-      if (!student?.batch || !session.batches.includes(student.batch)) {
+      const studentBatch = await getStudentBatch(req.student.email, req.student.id);
+      if (!studentBatch || !session.batches.includes(studentBatch)) {
         return res.status(403).json({ error: 'This class is not for your batch.' });
       }
     }

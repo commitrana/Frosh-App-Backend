@@ -12,11 +12,6 @@ const attendanceSessionSchema = new mongoose.Schema({
   day: { type: String, default: '', trim: true },
   slot: { type: String, default: '', trim: true },
 
-  // Which bootcamp batches this lecture is for (e.g. ['RedA', 'BlueB']).
-  // Empty array = visible to every batch (kept for backward compatibility
-  // with lectures created before batch-targeting existed).
-  batches: { type: [String], default: [] },
-
   // Professor's location at the moment the session was started — the "anchor"
   // every student's scan gets measured against.
   anchorLocation: {
@@ -28,6 +23,14 @@ const attendanceSessionSchema = new mongoose.Schema({
   // Base geofence radius in meters. Effective radius (used per-scan) also
   // factors in each device's own GPS accuracy — see routes/attendance.js
   radiusMeters: { type: Number, default: 30 },
+
+  // Which bootcamp batches this specific lecture is open to (e.g. ["RedA", "BlueB"]).
+  // Empty array = open to every student, regardless of batch (backward compatible
+  // with lectures created before batch-restriction existed).
+  allowedBatches: {
+    type: [String],
+    default: []
+  },
 
   // Static QR — no rotation for v1. Random + unguessable, embedded in the QR code.
   qrToken: {
