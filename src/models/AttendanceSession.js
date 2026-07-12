@@ -42,7 +42,26 @@ const attendanceSessionSchema = new mongoose.Schema({
 
   status: { type: String, enum: ['active', 'ended'], default: 'active' },
   startedAt: { type: Date, default: Date.now },
-  endedAt: { type: Date, default: null }
+  endedAt: { type: Date, default: null },
+
+  // ---- Session feedback (added on top of attendance) ----
+  // Faculty adds exactly 5 questions for this session (only after ending
+  // it). Combined with the 5 fixed FeedbackQuestion docs, students answer
+  // 10 total once feedback is opened.
+  feedbackQuestions: {
+    type: [
+      {
+        text: { type: String, required: true, trim: true },
+        order: { type: Number, required: true, min: 1, max: 5 }
+      }
+    ],
+    default: []
+  },
+  // 'not_set' -> faculty hasn't added their 5 questions yet
+  // 'open'    -> feedback started, students can submit
+  // 'closed'  -> feedback no longer accepting submissions (reserved for future use)
+  feedbackStatus: { type: String, enum: ['not_set', 'open', 'closed'], default: 'not_set' },
+  feedbackStartedAt: { type: Date, default: null }
 });
 
 attendanceSessionSchema.index({ faculty: 1, startedAt: -1 });

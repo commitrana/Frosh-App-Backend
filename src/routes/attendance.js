@@ -4,6 +4,7 @@ const AttendanceSession = require('../models/AttendanceSession');
 const AttendanceRecord = require('../models/AttendanceRecord');
 const BootcampStudent = require('../models/BootcampStudent');
 const Student = require('../models/Student');
+const FeedbackResponse = require('../models/FeedbackResponse');
 const { authFaculty, authStudent } = require('../middleware/auth');
 
 // Fetch the student's batch — checks BootcampStudent first (the authoritative
@@ -389,7 +390,50 @@ router.get('/active', authStudent, async (req, res) => {
       .populate('faculty', 'name department');
 
     if (!session) {
-      return res.json({ session: null, alreadyMarked: false, myStatus: null });
+      // No live attendance right now — check whether this student has
+      // feedback waiting for them (a session they attended where the
+      // faculty has since started feedback and they haven't submitted yet).
+      const myRecords = await AttendanceRecord.find({
+        student: req.student.id,
+        status: { $in: ['present', 'flagged'] }
+      }).select('session');
+      const sessionIds = myRecords.map((r) => r.session);
+
+      const feedbackSession = sessionIds.length
+        ? await AttendanceSession.findOne({ _id: { $in: sessionIds }, feedbackStatus: 'open' })
+            .sort({ feedbackStartedAt: -1 })
+            .populate('faculty', 'name department')
+        : null;
+
+      if (!feedbackSession) {
+        return res.json({ session: null, alreadyMarked: false, myStatus: null, type: 'attendance' });
+      }
+
+      const alreadySubmitted = await FeedbackResponse.findOne({
+        session: feedbackSession._id,
+        student: req.student.id
+      });
+
+      if (alreadySubmitted) {
+        return res.json({ session: null, alreadyMarked: false, myStatus: null, type: 'attendance' });
+      }
+
+      return res.json({
+        type: 'feedback',
+        session: {
+          _id: feedbackSession._id,
+          subject: feedbackSession.subject,
+          venue: feedbackSession.venue,
+          day: feedbackSession.day,
+          slot: feedbackSession.slot,
+          startedAt: feedbackSession.startedAt,
+          faculty: feedbackSession.faculty
+            ? { name: feedbackSession.faculty.name, department: feedbackSession.faculty.department }
+            : null
+        },
+        alreadyMarked: false,
+        myStatus: null
+      });
     }
 
     // Defensive fallback: sessions created before the batches field existed
@@ -403,7 +447,7 @@ router.get('/active', authStudent, async (req, res) => {
       sessionBatches.length === 0 || (studentBatch && sessionBatches.includes(studentBatch));
 
     if (!isForThisStudent) {
-      return res.json({ session: null, alreadyMarked: false, myStatus: null });
+      return res.json({ session: null, alreadyMarked: false, myStatus: null, type: 'attendance' });
     }
 
     const existingRecord = await AttendanceRecord.findOne({
@@ -412,6 +456,7 @@ router.get('/active', authStudent, async (req, res) => {
     });
 
     res.json({
+      type: 'attendance',
       session: {
         _id: session._id,
         subject: session.subject,

@@ -18,6 +18,7 @@ const ticketRoutes = require('./routes/tickets');
 const bootcampRoutes = require('./routes/bootcamp');
 const { authSociety, authAdmin } = require('./middleware/auth');
 const facultyTimetableRoutes = require('./routes/facultyTimetable');
+const feedbackRoutes = require('./routes/feedback');
 
 // Force Node.js to use system DNS
 dns.setDefaultResultOrder('ipv4first');
@@ -65,6 +66,7 @@ app.use('/api/faculty', facultyRoutes);
 app.use('/api/batches', batchRoutes);
 app.use('/api/attendance', attendanceRoutes); // Faculty: session start/live/flagged/review/end, Student: active/mark
 app.use('/api/faculty-timetable', facultyTimetableRoutes);
+app.use('/api/feedback', feedbackRoutes); // Admin: fixed questions/session list, Faculty: session questions/start/responses, Student: form/submit
 // Protected test routes
 app.get('/api/society-profile', authSociety, (req, res) => {
   res.json({
