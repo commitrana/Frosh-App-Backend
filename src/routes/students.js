@@ -1,7 +1,48 @@
 const express = require('express');
 const router = express.Router();
 const Student = require('../models/Student');
-const { authAdmin } = require('../middleware/auth');
+const BootcampStudent = require('../models/BootcampStudent');
+const { authAdmin, authStudent } = require('../middleware/auth');
+
+// Fetch the student's batch — checks BootcampStudent first (the authoritative
+// source for batch assignments), falls back to Student.batch if not found there.
+const getStudentBatch = async (email, studentId) => {
+  const bootcampEntry = await BootcampStudent.findOne({ email }).select('batch');
+  if (bootcampEntry) return bootcampEntry.batch;
+  const studentEntry = await Student.findById(studentId).select('batch');
+  return studentEntry?.batch ?? null;
+};
+
+// ============ STUDENT: Get my own profile (used by the app's Profile tab) ============
+router.get('/students/me', authStudent, async (req, res) => {
+  try {
+    const student = await Student.findById(req.student.id).select('-password');
+    if (!student) {
+      return res.status(404).json({ error: 'Student not found.' });
+    }
+
+    const batch = await getStudentBatch(student.email, student._id);
+
+    res.json({
+      student: {
+        _id: student._id,
+        name: student.name,
+        email: student.email,
+        branch: student.branch,
+        phoneNo: student.phoneNo,
+        dob: student.dob,
+        fatherName: student.fatherName,
+        motherName: student.motherName,
+        rollNo: student.rollNo,
+        slotNumber: student.slotNumber,
+        batch
+      }
+    });
+  } catch (error) {
+    console.error('❌ Get my profile error:', error);
+    res.status(500).json({ error: 'Server error: ' + error.message });
+  }
+});
 
 // ============ HELPER FUNCTION: Generate Password from Parents ============
 const generatePasswordFromParents = (student) => {
@@ -422,8 +463,6 @@ router.post('/students/create', authAdmin, async (req, res) => {
   }
 });
 // ============ STUDENT LOGIN ============
-// ============ STUDENT LOGIN ============
-// ============ STUDENT LOGIN ============
 router.post('/student-login', async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -448,7 +487,6 @@ router.post('/student-login', async (req, res) => {
     console.log(`✅ Student login successful: ${student.name}`);
     
     // ✅ FETCH BATCH FROM BOOTCAMP STUDENT COLLECTION
-    const BootcampStudent = require('../models/BootcampStudent');
     const bootcampStudent = await BootcampStudent.findOne({ email: email.toLowerCase().trim() });
     const batch = bootcampStudent ? bootcampStudent.batch : null;
     
