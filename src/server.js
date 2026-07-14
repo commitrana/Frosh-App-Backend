@@ -52,6 +52,8 @@ mongoose.connect(process.env.MONGODB_URI, {
   console.log('💡 If this fails, try running:');
   console.log('   node --dns-result-order=ipv4first src/server.js');
 });
+const path = require('path');
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Routes
 app.use('/api/auth', authRoutes);

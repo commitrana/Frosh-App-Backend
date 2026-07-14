@@ -53,7 +53,11 @@ const eventSchema = new mongoose.Schema({
   updatedAt: {
     type: Date,
     default: Date.now
-  }
+  },
+  imageUrl: {           // ✅ ADD THIS
+    type: String,
+    default: null
+  },
 });
 
 // Indexes

@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const Event = require('../models/Event');
 const { authAdmin } = require('../middleware/auth');
+const upload = require('../middleware/upload');
 
 // ============ PUBLIC: Get events (used by the mobile app) ============
 // Supports optional ?status=live|upcoming|past filter
@@ -144,7 +145,34 @@ router.put('/admin/:id/status', authAdmin, async (req, res) => {
     res.status(500).json({ error: 'Server error: ' + error.message });
   }
 });
+// Add this route
 
+
+// routes/events.js
+// ============ ADMIN: Upload/replace event cover photo ============
+router.post('/admin/:id/upload-image', authAdmin, upload.single('image'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No image file provided' });
+    }
+
+    // relative URL — server ise static serve karega
+    const imageUrl = `/uploads/events/${req.file.filename}`;
+
+    const event = await Event.findByIdAndUpdate(
+      req.params.id,
+      { imageUrl, updatedAt: new Date() },
+      { new: true }
+    );
+
+    if (!event) return res.status(404).json({ error: 'Event not found' });
+
+    res.json({ message: 'Cover photo uploaded successfully!', imageUrl, event });
+  } catch (error) {
+    console.error('❌ Upload image error:', error);
+    res.status(500).json({ error: 'Server error: ' + error.message });
+  }
+});
 // ============ ADMIN: Delete event ============
 router.delete('/admin/:id', authAdmin, async (req, res) => {
   try {
