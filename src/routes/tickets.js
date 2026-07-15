@@ -18,6 +18,17 @@ router.post('/register', authStudent, async (req, res) => {
       return res.status(404).json({ error: 'Event not found' });
     }
 
+    // The app only shows the Register button for live events, but that's
+    // just UI — nothing stopped someone from calling this endpoint directly
+    // for an upcoming/past event. Enforce it here too.
+    if (event.status !== 'live') {
+      return res.status(400).json({
+        error: event.status === 'upcoming'
+          ? 'Registration opens once this event goes live.'
+          : 'Registration is closed — this event has ended.'
+      });
+    }
+
     // Idempotent: if the student already has a ticket for this event,
     // just return it instead of creating a duplicate / erroring out.
     const existing = await Ticket.findOne({ event: eventId, student: req.student.id });
