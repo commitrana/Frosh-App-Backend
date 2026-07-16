@@ -11,8 +11,12 @@ const { authFaculty, authStudent } = require('../middleware/auth');
 // source for batch assignments), falls back to Student.batch if not found there.
 const getStudentBatch = async (email, studentId) => {
   const bootcampEntry = await BootcampStudent.findOne({ email }).select('batch');
-  if (bootcampEntry) return bootcampEntry.batch;
+  if (bootcampEntry) {
+    console.log(`🎯 getStudentBatch(${email}) -> '${bootcampEntry.batch}' (from BootcampStudent)`);
+    return bootcampEntry.batch;
+  }
   const studentEntry = await Student.findById(studentId).select('batch');
+  console.log(`⚠️ getStudentBatch(${email}) -> no BootcampStudent match, falling back to Student.batch = '${studentEntry?.batch}'`);
   return studentEntry?.batch ?? null;
 };
 
@@ -267,31 +271,39 @@ router.get('/session/:id/roster', authFaculty, async (req, res) => {
 
     let students;
     if (sessionBatches.length > 0) {
-      // Batch assignments live authoritatively in BootcampStudent (via email),
-      // with Student.batch as a secondary source — same priority as
-      // getStudentBatch() above. Pull from both so nobody gets missed.
-      const [bootcampEntries, directMatches] = await Promise.all([
-        BootcampStudent.find({ batch: { $in: sessionBatches } }).select('email batch'),
-        Student.find({ batch: { $in: sessionBatches } }).select('email batch')
+      // Previous version only pulled BootcampStudent records whose batch
+      // CURRENTLY matched sessionBatches, then overlaid those onto a
+      // separate Student.batch-based match. That meant a student who used
+      // to be in RedA (matching Student.batch, never updated after an
+      // admin reassignment) but has since been moved to RedB in
+      // BootcampStudent would still slip into the RedA roster — their
+      // BootcampStudent record wouldn't show up in the $in query (since
+      // its batch is now RedB, not RedA), so the stale Student.batch match
+      // was never overwritten/removed.
+      //
+      // Fix: load every BootcampStudent record unconditionally (it's
+      // authoritative whenever it exists), then filter by batch AFTER
+      // resolving each student's true current batch — so a reassignment
+      // always wins, in both directions.
+      const [allBootcampEntries, allStudents] = await Promise.all([
+        BootcampStudent.find({}).select('email batch'),
+        Student.find({}).select('name rollNo branch batch email').sort({ name: 1 })
       ]);
 
-      const batchByEmail = {};
-      directMatches.forEach((s) => { batchByEmail[s.email] = s.batch; });
-      // BootcampStudent takes priority if both exist for the same email.
-      bootcampEntries.forEach((b) => { batchByEmail[b.email] = b.batch; });
+      const bootcampByEmail = {};
+      allBootcampEntries.forEach((b) => { bootcampByEmail[b.email] = b.batch; });
 
-      const emails = Object.keys(batchByEmail);
-      const matchedStudents = await Student.find({ email: { $in: emails } })
-        .select('name rollNo branch batch email')
-        .sort({ name: 1 });
-
-      students = matchedStudents.map((s) => ({
-        _id: s._id,
-        name: s.name,
-        rollNo: s.rollNo,
-        branch: s.branch,
-        batch: batchByEmail[s.email] || s.batch
-      }));
+      students = allStudents
+        .map((s) => ({
+          _id: s._id,
+          name: s.name,
+          rollNo: s.rollNo,
+          branch: s.branch,
+          batch: Object.prototype.hasOwnProperty.call(bootcampByEmail, s.email)
+            ? bootcampByEmail[s.email]
+            : s.batch
+        }))
+        .filter((s) => sessionBatches.includes(s.batch));
     } else {
       const allStudents = await Student.find({}).select('name rollNo branch batch').sort({ name: 1 });
       students = allStudents.map((s) => ({
@@ -446,6 +458,12 @@ router.get('/active', authStudent, async (req, res) => {
     const isForThisStudent =
       sessionBatches.length === 0 || (studentBatch && sessionBatches.includes(studentBatch));
 
+    console.log(
+      `📋 /active check — student email=${req.student.email}, studentBatch='${studentBatch}', ` +
+      `session='${session.subject}', sessionBatches=${JSON.stringify(sessionBatches)}, ` +
+      `isForThisStudent=${isForThisStudent}`
+    );
+
     if (!isForThisStudent) {
       return res.json({ session: null, alreadyMarked: false, myStatus: null, type: 'attendance' });
     }
@@ -478,10 +496,22 @@ router.get('/active', authStudent, async (req, res) => {
 // ============ STUDENT: Scan QR & Mark Attendance ============
 router.post('/mark', authStudent, async (req, res) => {
   try {
-    const { qrToken, studentGPS, studentAccuracy } = req.body;
+    const { qrToken, studentGPS, studentAccuracy, mocked } = req.body;
 
     if (!qrToken || !studentGPS || studentGPS.lat == null || studentGPS.lng == null) {
       return res.status(400).json({ error: 'qrToken and studentGPS {lat, lng} are required' });
+    }
+
+    // The app sets this when Android's location API itself flags the
+    // reading as coming from a mock-location provider (fake GPS app). This
+    // is the check that actually matters — the client-side check in
+    // ScanAttendanceScreen is just a faster/friendlier version of this same
+    // rejection; someone bypassing the app and calling this endpoint
+    // directly would skip that one, but not this one.
+    if (mocked === true) {
+      return res.status(403).json({
+        error: 'Mock/fake location detected. Please disable any mock location app or developer setting and try again.'
+      });
     }
 
     const session = await AttendanceSession.findOne({ qrToken });
