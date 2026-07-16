@@ -395,6 +395,19 @@ router.post('/session/:id/mark-manual', authFaculty, async (req, res) => {
 // Mark Attendance option when a faculty member has an active session running.
 router.get('/active', authStudent, async (req, res) => {
   try {
+    // Safety net: a session left "active" forever (faculty forgot to end
+    // it, or a test session from days ago) would otherwise show up as
+    // "live" to every matching student indefinitely, with no way to clear
+    // it except manually editing the database. No real class runs longer
+    // than a few hours, so auto-close anything active past that — this
+    // also retroactively fixes any already-stuck sessions the moment this
+    // code runs, no manual DB cleanup needed.
+    const MAX_SESSION_AGE_MS = 4 * 60 * 60 * 1000; // 4 hours
+    await AttendanceSession.updateMany(
+      { status: 'active', startedAt: { $lt: new Date(Date.now() - MAX_SESSION_AGE_MS) } },
+      { status: 'ended', endedAt: new Date() }
+    );
+
     const studentBatch = await getStudentBatch(req.student.email, req.student.id);
 
     const session = await AttendanceSession.findOne({ status: 'active' })
