@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const Student = require('../models/Student');
 const BootcampStudent = require('../models/BootcampStudent');
+const Faculty = require('../models/Faculty');
 const { authAdmin, authStudent } = require('../middleware/auth');
 
 // 10 colors x 2 sections (A/B) = 20 valid batch codes
@@ -167,6 +168,77 @@ router.get('/my-batch', authStudent, async (req, res) => {
     res.json({ batch: entry ? entry.batch : null });
   } catch (error) {
     console.error('❌ Get my batch error:', error);
+    res.status(500).json({ error: 'Server error: ' + error.message });
+  }
+});
+
+// ============ STUDENT: Get my actual class timetable ============
+// Builds a real, structured timetable for this student by scanning every
+// faculty's schedule (the same data the admin panel edits in the "Class
+// Schedule" screen) and keeping only the lectures assigned to this
+// student's batch — no separate "student timetable" data to maintain,
+// it's always derived live from the faculty side, so it can never drift
+// out of sync with what admin/faculty actually configured.
+router.get('/my-timetable', authStudent, async (req, res) => {
+  try {
+    const entry = await BootcampStudent.findOne({ email: req.student.email }).select('batch');
+    const studentBatch = entry ? entry.batch : null;
+
+    if (!studentBatch) {
+      return res.json({ batch: null, days: [], timeSlots: [], classes: [] });
+    }
+
+    const allFaculty = await Faculty.find({}).select('name department timetable');
+
+    const classes = [];
+    const daySet = new Set();
+    const slotSet = new Set();
+
+    allFaculty.forEach((faculty) => {
+      const schedule = faculty?.timetable?.schedule;
+      if (!schedule || typeof schedule !== 'object') return;
+
+      Object.keys(schedule).forEach((day) => {
+        const daySchedule = schedule[day];
+        if (!daySchedule || typeof daySchedule !== 'object') return;
+
+        Object.keys(daySchedule).forEach((slot) => {
+          const lecture = daySchedule[slot];
+          if (!lecture || !lecture.subject) return;
+
+          const lectureBatches = Array.isArray(lecture.batches) ? lecture.batches : [];
+          // Empty batches list = open to everyone, same convention used
+          // everywhere else (attendance sessions, roster, etc).
+          const isForThisStudent =
+            lectureBatches.length === 0 || lectureBatches.includes(studentBatch);
+
+          if (!isForThisStudent) return;
+
+          daySet.add(day);
+          slotSet.add(slot);
+          classes.push({
+            day,
+            slot,
+            subject: lecture.subject,
+            venue: lecture.venue || '',
+            faculty: faculty.name,
+            department: faculty.department || ''
+          });
+        });
+      });
+    });
+
+    // Sort slots chronologically by their start time (slot label looks
+    // like "09:00 - 10:00") rather than alphabetically.
+    const slotStart = (slot) => slot.split('-')[0]?.trim() || slot;
+    const timeSlots = Array.from(slotSet).sort((a, b) => slotStart(a).localeCompare(slotStart(b)));
+
+    const dayOrder = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+    const days = Array.from(daySet).sort((a, b) => dayOrder.indexOf(a) - dayOrder.indexOf(b));
+
+    res.json({ batch: studentBatch, days, timeSlots, classes });
+  } catch (error) {
+    console.error('❌ Get my timetable error:', error);
     res.status(500).json({ error: 'Server error: ' + error.message });
   }
 });
