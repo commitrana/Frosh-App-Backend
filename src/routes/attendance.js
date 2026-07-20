@@ -4,8 +4,9 @@ const AttendanceSession = require('../models/AttendanceSession');
 const AttendanceRecord = require('../models/AttendanceRecord');
 const BootcampStudent = require('../models/BootcampStudent');
 const Student = require('../models/Student');
+const Faculty = require('../models/Faculty');
 const FeedbackResponse = require('../models/FeedbackResponse');
-const { authFaculty, authStudent } = require('../middleware/auth');
+const { authAdmin, authFaculty, authStudent } = require('../middleware/auth');
 
 // Fetch the student's batch — checks BootcampStudent first (the authoritative
 // source for batch assignments), falls back to Student.batch if not found there.
@@ -19,6 +20,112 @@ const getStudentBatch = async (email, studentId) => {
   console.log(`⚠️ getStudentBatch(${email}) -> no BootcampStudent match, falling back to Student.batch = '${studentEntry?.batch}'`);
   return studentEntry?.batch ?? null;
 };
+
+// Build one consistent class roster for faculty and admin views. A
+// flagged/rejected scan is absent unless the professor explicitly resolved it
+// as present; students without an attendance record are absent.
+const buildSessionRoster = async (session) => {
+  const sessionBatches = Array.isArray(session.batches) ? session.batches : [];
+  let students;
+
+  if (sessionBatches.length > 0) {
+    const [allBootcampEntries, allStudents] = await Promise.all([
+      BootcampStudent.find({}).select('email batch'),
+      Student.find({}).select('name rollNo branch batch email').sort({ name: 1 })
+    ]);
+    const bootcampByEmail = {};
+    allBootcampEntries.forEach((entry) => { bootcampByEmail[entry.email] = entry.batch; });
+    students = allStudents
+      .map((student) => ({
+        _id: student._id,
+        name: student.name,
+        rollNo: student.rollNo,
+        branch: student.branch,
+        batch: Object.prototype.hasOwnProperty.call(bootcampByEmail, student.email)
+          ? bootcampByEmail[student.email]
+          : student.batch
+      }))
+      .filter((student) => sessionBatches.includes(student.batch));
+  } else {
+    const allStudents = await Student.find({}).select('name rollNo branch batch').sort({ name: 1 });
+    students = allStudents.map((student) => ({
+      _id: student._id,
+      name: student.name,
+      rollNo: student.rollNo,
+      branch: student.branch,
+      batch: student.batch
+    }));
+  }
+
+  const records = await AttendanceRecord.find({ session: session._id });
+  const recordByStudentId = {};
+  records.forEach((record) => { recordByStudentId[record.student.toString()] = record; });
+
+  return students.map((student) => {
+    const record = recordByStudentId[student._id.toString()];
+    const isPresent = record && (record.finalStatus === 'present' || (!record.finalStatus && record.status === 'present'));
+    return {
+      _id: student._id,
+      name: student.name,
+      rollNo: student.rollNo,
+      branch: student.branch,
+      batch: student.batch,
+      status: isPresent ? 'present' : 'absent',
+      markedManually: record ? !!record.markedManually : false
+    };
+  });
+};
+
+// ============ ADMIN: Completed class history ============
+router.get('/admin/history/faculty', authAdmin, async (req, res) => {
+  try {
+    const [faculty, sessions] = await Promise.all([
+      Faculty.find({}).select('name department').sort({ name: 1 }),
+      AttendanceSession.find({ status: 'ended' }).select('faculty')
+    ]);
+    const completedCountByFaculty = {};
+    sessions.forEach((session) => {
+      const id = session.faculty.toString();
+      completedCountByFaculty[id] = (completedCountByFaculty[id] || 0) + 1;
+    });
+    res.json({
+      faculty: faculty.map((member) => ({
+        _id: member._id,
+        name: member.name,
+        department: member.department,
+        completedClasses: completedCountByFaculty[member._id.toString()] || 0
+      }))
+    });
+  } catch (error) {
+    console.error('Get admin class-history faculty error:', error);
+    res.status(500).json({ error: 'Server error: ' + error.message });
+  }
+});
+
+router.get('/admin/history/faculty/:facultyId/sessions', authAdmin, async (req, res) => {
+  try {
+    const sessions = await AttendanceSession.find({
+      faculty: req.params.facultyId,
+      status: 'ended'
+    }).select('subject venue day slot batches startedAt endedAt').sort({ endedAt: -1 });
+    res.json({ count: sessions.length, sessions });
+  } catch (error) {
+    console.error('Get admin class-history sessions error:', error);
+    res.status(500).json({ error: 'Server error: ' + error.message });
+  }
+});
+
+router.get('/admin/history/session/:sessionId/roster', authAdmin, async (req, res) => {
+  try {
+    const session = await AttendanceSession.findOne({ _id: req.params.sessionId, status: 'ended' });
+    if (!session) return res.status(404).json({ error: 'Completed class not found' });
+    const students = await buildSessionRoster(session);
+    res.json({ count: students.length, students });
+  } catch (error) {
+    console.error('Get admin class-history roster error:', error);
+    res.status(500).json({ error: 'Server error: ' + error.message });
+  }
+});
 
 // Distance between two lat/lng points, in meters.
 function haversineMeters(a, b) {
