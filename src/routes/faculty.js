@@ -115,7 +115,13 @@ router.put('/admin/:id', authAdmin, async (req, res) => {
     if (photo) faculty.photo = photo;
     if (teacherNo !== undefined) faculty.teacherNo = teacherNo;
     if (timetableImage !== undefined) faculty.timetableImage = timetableImage;
-    if (timetable) faculty.timetable = timetable;
+    // `timetable` is a Mongoose Mixed field. Explicitly mark it modified so
+    // schedules saved for a newly created faculty member are never skipped
+    // during change tracking.
+    if (timetable !== undefined) {
+      faculty.timetable = timetable;
+      faculty.markModified('timetable');
+    }
     if (password) {
       if (password.length < 6) {
         return res.status(400).json({ error: 'Password must be at least 6 characters' });
