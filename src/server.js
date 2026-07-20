@@ -69,6 +69,9 @@ app.use('/api/batches', batchRoutes);
 app.use('/api/attendance', attendanceRoutes); // Faculty: session start/live/flagged/review/end, Student: active/mark
 app.use('/api/faculty-timetable', facultyTimetableRoutes);
 app.use('/api/feedback', feedbackRoutes); // Admin: fixed questions/session list, Faculty: session questions/start/responses, Student: form/submit
+const teamRoutes = require('./routes/team');
+app.use('/api/team', teamRoutes);
+app.use('/api/admin/team', teamRoutes);
 // Protected test routes
 app.get('/api/society-profile', authSociety, (req, res) => {
   res.json({
