@@ -1,0 +1,27 @@
+const jwt = require('jsonwebtoken');
+
+// If you already have an admin-auth middleware elsewhere in the project
+// (check middleware/ or routes/admin.js for how other protected admin
+// routes verify the token), use that one instead and delete this file —
+// no point having two copies of the same check. This is here in case
+// you don't have one factored out yet.
+module.exports = function adminAuth(req, res, next) {
+  const authHeader = req.headers.authorization;
+
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'No token provided' });
+  }
+
+  const token = authHeader.split(' ')[1];
+
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback_secret_key');
+    if (decoded.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+    req.admin = decoded;
+    next();
+  } catch (err) {
+    return res.status(401).json({ error: 'Invalid or expired token' });
+  }
+};
