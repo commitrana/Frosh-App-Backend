@@ -164,6 +164,9 @@ router.post('/admin/shuffle', authAdmin, async (req, res) => {
 // ============ STUDENT: Get my own batch (used by the app's Bootcamp tab) ============
 router.get('/my-batch', authStudent, async (req, res) => {
   try {
+    // A student's batch can be changed by an admin. Never allow a device or
+    // intermediary to reuse an older value for this live lookup.
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
     const entry = await BootcampStudent.findOne({ email: req.student.email });
     res.json({ batch: entry ? entry.batch : null });
   } catch (error) {
@@ -235,6 +238,10 @@ const buildTimetableForBatch = async (batchCode) => {
 // out of sync with what admin/faculty actually configured.
 router.get('/my-timetable', authStudent, async (req, res) => {
   try {
+    // This response is calculated from all faculty schedules on every
+    // request. Mark it explicitly dynamic so a newly saved faculty schedule
+    // cannot be hidden behind a cached GET response on the student app.
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
     const entry = await BootcampStudent.findOne({ email: req.student.email }).select('batch');
     const studentBatch = entry ? entry.batch : null;
 
