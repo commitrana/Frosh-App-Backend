@@ -127,6 +127,23 @@ router.get('/admin/history/session/:sessionId/roster', authAdmin, async (req, re
   }
 });
 
+// ============ FACULTY: Own completed class history ============
+// Read-only list of this faculty's own ended sessions, most recent first —
+// powers the "Class History" screen in the app (separate from the live
+// "My Past Sessions" list at /faculty/sessions, which includes active ones).
+router.get('/faculty/history/sessions', authFaculty, async (req, res) => {
+  try {
+    const sessions = await AttendanceSession.find({
+      faculty: req.faculty.id,
+      status: 'ended'
+    }).select('subject venue day slot batches startedAt endedAt').sort({ endedAt: -1 });
+    res.json({ count: sessions.length, sessions });
+  } catch (error) {
+    console.error('❌ Get faculty class-history sessions error:', error);
+    res.status(500).json({ error: 'Server error: ' + error.message });
+  }
+});
+
 // Distance between two lat/lng points, in meters.
 function haversineMeters(a, b) {
   const R = 6371000; // Earth radius in meters
