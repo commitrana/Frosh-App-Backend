@@ -144,6 +144,58 @@ router.get('/faculty/history/sessions', authFaculty, async (req, res) => {
   }
 });
 
+// ============ STUDENT: Own class history ============
+// Read-only history of this student's own classes — every ended session
+// open to their batch (or open to everyone), tagged with the student's own
+// attendance status. Mirrors '/faculty/history/sessions', but scoped to one
+// student's status instead of a full roster — powers the student-facing
+// "Class History" screen.
+router.get('/student/history', authStudent, async (req, res) => {
+  try {
+    const studentBatch = await getStudentBatch(req.student.email, req.student.id);
+
+    const sessions = await AttendanceSession.find({
+      status: 'ended',
+      $or: [
+        { batches: { $size: 0 } },
+        ...(studentBatch ? [{ batches: studentBatch }] : [])
+      ]
+    })
+      .select('subject venue day slot batches startedAt endedAt')
+      .populate('faculty', 'name department')
+      .sort({ endedAt: -1 });
+
+    const sessionIds = sessions.map((s) => s._id);
+    const records = await AttendanceRecord.find({
+      session: { $in: sessionIds },
+      student: req.student.id
+    });
+    const recordBySessionId = {};
+    records.forEach((r) => { recordBySessionId[r.session.toString()] = r; });
+
+    const history = sessions.map((session) => {
+      const record = recordBySessionId[session._id.toString()];
+      const isPresent = record && (record.finalStatus === 'present' || (!record.finalStatus && record.status === 'present'));
+      return {
+        _id: session._id,
+        subject: session.subject,
+        venue: session.venue,
+        day: session.day,
+        slot: session.slot,
+        startedAt: session.startedAt,
+        endedAt: session.endedAt,
+        faculty: session.faculty ? { name: session.faculty.name, department: session.faculty.department } : null,
+        status: isPresent ? 'present' : 'absent'
+      };
+    });
+
+    res.json({ count: history.length, sessions: history });
+  } catch (error) {
+    console.error('❌ Get student class-history error:', error);
+    res.status(500).json({ error: 'Server error: ' + error.message });
+  }
+});
+
 // Distance between two lat/lng points, in meters.
 function haversineMeters(a, b) {
   const R = 6371000; // Earth radius in meters
