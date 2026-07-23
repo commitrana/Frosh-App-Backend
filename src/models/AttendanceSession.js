@@ -1,5 +1,4 @@
 const mongoose = require('mongoose');
-const crypto = require('crypto');
 
 const QUESTION_TYPES = [
   'short_answer',
@@ -42,12 +41,17 @@ const attendanceSessionSchema = new mongoose.Schema({
     default: []
   },
 
-  // Static QR — no rotation for v1. Random + unguessable, embedded in the QR code.
-  qrToken: {
+  // Short code students type in by hand (replaces the old QR token). Chosen
+  // from an unambiguous alphabet (no 0/O, 1/I/L) since it's read off a
+  // screen/projector. Generated in routes/attendance.js so it can be
+  // checked for uniqueness against other currently-active sessions before
+  // save — see generateUniqueSessionCode(). Not globally unique forever:
+  // once a session ends, its code is free to be reused by a future one.
+  attendanceCode: {
     type: String,
     required: true,
-    unique: true,
-    default: () => crypto.randomBytes(16).toString('hex')
+    uppercase: true,
+    trim: true
   },
 
   status: { type: String, enum: ['active', 'ended'], default: 'active' },
@@ -80,7 +84,11 @@ const attendanceSessionSchema = new mongoose.Schema({
 });
 
 attendanceSessionSchema.index({ faculty: 1, startedAt: -1 });
-attendanceSessionSchema.index({ qrToken: 1 });
+// Not unique at the DB level — a code is only guaranteed unique among
+// *active* sessions (enforced in the route at creation time). Ended
+// sessions may share a code with a later one, so lookups for /mark always
+// filter status separately.
+attendanceSessionSchema.index({ attendanceCode: 1, status: 1 });
 
 module.exports = mongoose.model('AttendanceSession', attendanceSessionSchema);
 module.exports.QUESTION_TYPES = QUESTION_TYPES;

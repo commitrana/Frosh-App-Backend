@@ -1,4 +1,5 @@
 const express = require('express');
+const crypto = require('crypto');
 const router = express.Router();
 const AttendanceSession = require('../models/AttendanceSession');
 const AttendanceRecord = require('../models/AttendanceRecord');
@@ -196,6 +197,31 @@ router.get('/student/history', authStudent, async (req, res) => {
   }
 });
 
+// Characters chosen to avoid visual ambiguity when read off a phone/projector
+// and typed by hand: no 0/O, 1/I/L, no lowercase.
+const CODE_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+const CODE_LENGTH = 6;
+
+const generateSessionCode = () => {
+  let code = '';
+  for (let i = 0; i < CODE_LENGTH; i++) {
+    code += CODE_CHARS[crypto.randomInt(0, CODE_CHARS.length)];
+  }
+  return code;
+};
+
+// Only needs to be unique among sessions that are currently active — once a
+// session ends its code is fair game for reuse. Collisions are already rare
+// (32^6 ≈ 1 billion combinations) but this makes it safe regardless.
+const generateUniqueSessionCode = async () => {
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const code = generateSessionCode();
+    const clash = await AttendanceSession.findOne({ attendanceCode: code, status: 'active' });
+    if (!clash) return code;
+  }
+  throw new Error('Could not generate a unique attendance code — please try again.');
+};
+
 // Distance between two lat/lng points, in meters.
 function haversineMeters(a, b) {
   const R = 6371000; // Earth radius in meters
@@ -230,7 +256,8 @@ router.post('/session/start', authFaculty, async (req, res) => {
       batches: Array.isArray(batches) ? batches : [],
       anchorLocation: { lat: professorLocation.lat, lng: professorLocation.lng },
       anchorAccuracy: professorAccuracy || 20,
-      radiusMeters: radiusMeters || 30
+      radiusMeters: radiusMeters || 30,
+      attendanceCode: await generateUniqueSessionCode()
     });
 
     await session.save();
@@ -682,14 +709,16 @@ router.get('/active', authStudent, async (req, res) => {
   }
 });
 
-// ============ STUDENT: Scan QR & Mark Attendance ============
+// ============ STUDENT: Enter Code & Mark Attendance ============
 router.post('/mark', authStudent, async (req, res) => {
   try {
-    const { qrToken, studentGPS, studentAccuracy, mocked } = req.body;
+    const { code, studentGPS, studentAccuracy, mocked } = req.body;
 
-    if (!qrToken || !studentGPS || studentGPS.lat == null || studentGPS.lng == null) {
-      return res.status(400).json({ error: 'qrToken and studentGPS {lat, lng} are required' });
+    if (!code || !studentGPS || studentGPS.lat == null || studentGPS.lng == null) {
+      return res.status(400).json({ error: 'code and studentGPS {lat, lng} are required' });
     }
+
+    const normalizedCode = String(code).trim().toUpperCase();
 
     // The app sets this when Android's location API itself flags the
     // reading as coming from a mock-location provider (fake GPS app). This
@@ -703,13 +732,13 @@ router.post('/mark', authStudent, async (req, res) => {
       });
     }
 
-    const session = await AttendanceSession.findOne({ qrToken });
+    // Codes are only guaranteed unique among active sessions, so we match
+    // on status here too rather than looking the code up in isolation —
+    // an old ended session could coincidentally share a code with a new
+    // one, and we want the new (active) one to win.
+    const session = await AttendanceSession.findOne({ attendanceCode: normalizedCode, status: 'active' });
     if (!session) {
-      return res.status(404).json({ error: 'Invalid QR code. This attendance session was not found.' });
-    }
-
-    if (session.status === 'ended') {
-      return res.status(400).json({ error: 'This attendance session has already ended.' });
+      return res.status(404).json({ error: 'Invalid or expired attendance code. Please check with your professor and try again.' });
     }
 
     // Defensive fallback — see note in GET /active above.
