@@ -1,6 +1,16 @@
 const mongoose = require('mongoose');
 const crypto = require('crypto');
 
+const QUESTION_TYPES = [
+  'short_answer',
+  'paragraph',
+  'multiple_choice',
+  'checkboxes',
+  'dropdown',
+  'linear_scale',
+  'numerical'
+];
+
 const attendanceSessionSchema = new mongoose.Schema({
   faculty: {
     type: mongoose.Schema.Types.ObjectId,
@@ -47,12 +57,17 @@ const attendanceSessionSchema = new mongoose.Schema({
   // ---- Session feedback (added on top of attendance) ----
   // Faculty adds exactly 5 questions for this session (only after ending
   // it). Combined with the 5 fixed FeedbackQuestion docs, students answer
-  // 10 total once feedback is opened.
+  // 10 total once feedback is opened. Each question can be any of
+  // QUESTION_TYPES (Google Forms style) instead of always a 1-5 rating.
   feedbackQuestions: {
     type: [
       {
         text: { type: String, required: true, trim: true },
-        order: { type: Number, required: true, min: 1, max: 5 }
+        order: { type: Number, required: true, min: 1, max: 5 },
+        type: { type: String, enum: QUESTION_TYPES, required: true, default: 'linear_scale' },
+        options: { type: [String], default: [] }, // multiple_choice / checkboxes / dropdown
+        scaleMin: { type: Number, default: 1 },     // linear_scale
+        scaleMax: { type: Number, default: 5 }       // linear_scale
       }
     ],
     default: []
@@ -68,3 +83,4 @@ attendanceSessionSchema.index({ faculty: 1, startedAt: -1 });
 attendanceSessionSchema.index({ qrToken: 1 });
 
 module.exports = mongoose.model('AttendanceSession', attendanceSessionSchema);
+module.exports.QUESTION_TYPES = QUESTION_TYPES;

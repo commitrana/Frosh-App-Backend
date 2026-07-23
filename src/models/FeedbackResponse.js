@@ -1,16 +1,17 @@
 const mongoose = require('mongoose');
 
-// One document per student per session. Answers array always has exactly
-// 10 entries: 5 with source 'admin' (order 1-5) + 5 with source 'faculty'
-// (order 1-5) — matching AttendanceSession.feedbackQuestions and
-// FeedbackQuestion at submit time, so the question text is preserved even
-// if the fixed questions are edited later.
 const answerSchema = new mongoose.Schema({
   source: { type: String, enum: ['admin', 'faculty'], required: true },
   order: { type: Number, required: true, min: 1, max: 5 },
   questionText: { type: String, required: true },
-  rating: { type: Number, required: true, min: 1, max: 5 },
-  comment: { type: String, default: '', trim: true }
+  questionType: {
+    type: String,
+    enum: ['short_answer', 'paragraph', 'multiple_choice', 'checkboxes', 'dropdown', 'linear_scale', 'numerical'],
+    required: true
+  },
+  textValue: { type: String, default: undefined },
+  numberValue: { type: Number, default: undefined },
+  selectedOptions: { type: [String], default: undefined }
 }, { _id: false });
 
 const feedbackResponseSchema = new mongoose.Schema({

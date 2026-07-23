@@ -6,6 +6,116 @@ const AttendanceSession = require('../models/AttendanceSession');
 const AttendanceRecord = require('../models/AttendanceRecord');
 const { authAdmin, authFaculty, authStudent } = require('../middleware/auth');
 
+const QUESTION_TYPES = [
+  'short_answer',
+  'paragraph',
+  'multiple_choice',
+  'checkboxes',
+  'dropdown',
+  'linear_scale',
+  'numerical'
+];
+const CHOICE_TYPES = ['multiple_choice', 'checkboxes', 'dropdown'];
+
+// Validates an array of 5 question definitions coming from the admin or
+// faculty question builder. Each item: { text, type, options?, scaleMin?, scaleMax? }
+// Returns an error string, or null if valid.
+function validateQuestionDefs(defs) {
+  if (!Array.isArray(defs) || defs.length !== 5) {
+    return 'Exactly 5 questions are required.';
+  }
+  for (const q of defs) {
+    if (!q || !q.text || !q.text.trim()) {
+      return 'Every question needs text.';
+    }
+    if (!QUESTION_TYPES.includes(q.type)) {
+      return `Invalid question type: ${q.type}`;
+    }
+    if (CHOICE_TYPES.includes(q.type)) {
+      const opts = (q.options || []).map((o) => (o || '').trim()).filter(Boolean);
+      if (opts.length < 2) {
+        return `"${q.text}" needs at least 2 options.`;
+      }
+    }
+    if (q.type === 'linear_scale') {
+      const min = q.scaleMin ?? 1;
+      const max = q.scaleMax ?? 5;
+      if (!Number.isInteger(min) || !Number.isInteger(max) || min >= max) {
+        return `"${q.text}" has an invalid scale range.`;
+      }
+    }
+  }
+  return null;
+}
+
+// Builds a clean, storage-ready question def from raw input.
+function cleanQuestionDef(q, order) {
+  const type = q.type;
+  const base = { text: q.text.trim(), order, type };
+  if (CHOICE_TYPES.includes(type)) {
+    base.options = (q.options || []).map((o) => (o || '').trim()).filter(Boolean);
+  } else {
+    base.options = [];
+  }
+  if (type === 'linear_scale') {
+    base.scaleMin = q.scaleMin ?? 1;
+    base.scaleMax = q.scaleMax ?? 5;
+  } else {
+    base.scaleMin = 1;
+    base.scaleMax = 5;
+  }
+  return base;
+}
+
+// Validates one submitted answer against its question definition. Returns
+// an error string, or null if valid. Mutates nothing — caller builds the
+// stored answer separately via buildStoredAnswer.
+function validateAnswerAgainstDef(a, def) {
+  if (!def) return 'One or more questions could not be matched. Please refresh and try again.';
+
+  if (def.type === 'short_answer' || def.type === 'paragraph') {
+    if (typeof a.textValue !== 'string' || !a.textValue.trim()) {
+      return `"${def.text}" needs an answer.`;
+    }
+  } else if (def.type === 'numerical') {
+    if (typeof a.numberValue !== 'number' || !Number.isFinite(a.numberValue)) {
+      return `"${def.text}" needs a numeric answer.`;
+    }
+  } else if (def.type === 'linear_scale') {
+    const min = def.scaleMin ?? 1;
+    const max = def.scaleMax ?? 5;
+    if (!Number.isInteger(a.numberValue) || a.numberValue < min || a.numberValue > max) {
+      return `"${def.text}" needs a value between ${min} and ${max}.`;
+    }
+  } else if (def.type === 'multiple_choice' || def.type === 'dropdown') {
+    if (!Array.isArray(a.selectedOptions) || a.selectedOptions.length !== 1 || !def.options.includes(a.selectedOptions[0])) {
+      return `"${def.text}" needs one selected option.`;
+    }
+  } else if (def.type === 'checkboxes') {
+    if (!Array.isArray(a.selectedOptions) || a.selectedOptions.length < 1 || a.selectedOptions.some((o) => !def.options.includes(o))) {
+      return `"${def.text}" needs at least one selected option.`;
+    }
+  }
+  return null;
+}
+
+function buildStoredAnswer(a, def, source) {
+  const stored = {
+    source,
+    order: def.order,
+    questionText: def.text,
+    questionType: def.type
+  };
+  if (def.type === 'short_answer' || def.type === 'paragraph') {
+    stored.textValue = a.textValue.trim();
+  } else if (def.type === 'numerical' || def.type === 'linear_scale') {
+    stored.numberValue = a.numberValue;
+  } else {
+    stored.selectedOptions = a.selectedOptions;
+  }
+  return stored;
+}
+
 // ============================================================
 // ADMIN: the 5 fixed global questions
 // ============================================================
@@ -21,23 +131,24 @@ router.get('/admin/questions', authAdmin, async (req, res) => {
   }
 });
 
-// Replace all 5 fixed questions in one go. Body: { questions: ["...", "...", ...] }
-// exactly 5 non-empty strings, in display order.
+// Replace all 5 fixed questions in one go.
+// Body: { questions: [{ text, type, options?, scaleMin?, scaleMax? }, ...5] }
 router.put('/admin/questions', authAdmin, async (req, res) => {
   try {
     const { questions } = req.body;
+    const err = validateQuestionDefs(questions);
+    if (err) return res.status(400).json({ error: err });
 
-    if (!Array.isArray(questions) || questions.length !== 5 || questions.some((q) => !q || !q.trim())) {
-      return res.status(400).json({ error: 'Exactly 5 non-empty questions are required.' });
-    }
-
-    const ops = questions.map((text, i) => ({
-      updateOne: {
-        filter: { order: i + 1 },
-        update: { $set: { text: text.trim(), order: i + 1 } },
-        upsert: true
-      }
-    }));
+    const ops = questions.map((q, i) => {
+      const def = cleanQuestionDef(q, i + 1);
+      return {
+        updateOne: {
+          filter: { order: def.order },
+          update: { $set: def },
+          upsert: true
+        }
+      };
+    });
     await FeedbackQuestion.bulkWrite(ops);
 
     const saved = await FeedbackQuestion.find({}).sort({ order: 1 });
@@ -86,14 +197,12 @@ router.get('/admin/session/:id/responses', authAdmin, async (req, res) => {
 // ============================================================
 
 // Faculty adds exactly 5 questions for a session they just ended.
-// Body: { questions: ["...", "...", ...] } exactly 5 non-empty strings.
+// Body: { questions: [{ text, type, options?, scaleMin?, scaleMax? }, ...5] }
 router.post('/session/:id/questions', authFaculty, async (req, res) => {
   try {
     const { questions } = req.body;
-
-    if (!Array.isArray(questions) || questions.length !== 5 || questions.some((q) => !q || !q.trim())) {
-      return res.status(400).json({ error: 'Exactly 5 non-empty questions are required.' });
-    }
+    const err = validateQuestionDefs(questions);
+    if (err) return res.status(400).json({ error: err });
 
     const session = await AttendanceSession.findOne({ _id: req.params.id, faculty: req.faculty.id });
     if (!session) {
@@ -108,7 +217,7 @@ router.post('/session/:id/questions', authFaculty, async (req, res) => {
       return res.status(400).json({ error: 'Feedback questions for this session are already set.' });
     }
 
-    session.feedbackQuestions = questions.map((text, i) => ({ text: text.trim(), order: i + 1 }));
+    session.feedbackQuestions = questions.map((q, i) => cleanQuestionDef(q, i + 1));
     await session.save();
 
     console.log(`✅ Faculty feedback questions set for session ${session._id}`);
@@ -214,10 +323,16 @@ router.get('/session/:id/form', authStudent, async (req, res) => {
     res.json({
       session: { _id: session._id, subject: session.subject, venue: session.venue },
       questions: [
-        ...adminQuestions.map((q) => ({ source: 'admin', order: q.order, text: q.text })),
+        ...adminQuestions.map((q) => ({
+          source: 'admin', order: q.order, text: q.text, type: q.type,
+          options: q.options, scaleMin: q.scaleMin, scaleMax: q.scaleMax
+        })),
         ...session.feedbackQuestions
           .sort((a, b) => a.order - b.order)
-          .map((q) => ({ source: 'faculty', order: q.order, text: q.text }))
+          .map((q) => ({
+            source: 'faculty', order: q.order, text: q.text, type: q.type,
+            options: q.options, scaleMin: q.scaleMin, scaleMax: q.scaleMax
+          }))
       ]
     });
   } catch (error) {
@@ -226,7 +341,8 @@ router.get('/session/:id/form', authStudent, async (req, res) => {
   }
 });
 
-// Submit the 10 answers. Body: { answers: [{ source, order, rating, comment }] }
+// Submit the 10 answers.
+// Body: { answers: [{ source, order, textValue?, numberValue?, selectedOptions? }] }
 router.post('/session/:id/submit', authStudent, async (req, res) => {
   try {
     const { answers } = req.body;
@@ -235,11 +351,8 @@ router.post('/session/:id/submit', authStudent, async (req, res) => {
       return res.status(400).json({ error: 'All 10 questions must be answered.' });
     }
     for (const a of answers) {
-      if (!['admin', 'faculty'].includes(a.source) || !a.order || a.rating == null) {
-        return res.status(400).json({ error: 'Each answer needs a source, order, and rating.' });
-      }
-      if (!Number.isInteger(a.rating) || a.rating < 1 || a.rating > 5) {
-        return res.status(400).json({ error: 'Ratings must be whole numbers from 1 to 5.' });
+      if (!['admin', 'faculty'].includes(a.source) || !a.order) {
+        return res.status(400).json({ error: 'Each answer needs a source and order.' });
       }
     }
 
@@ -257,28 +370,24 @@ router.post('/session/:id/submit', authStudent, async (req, res) => {
       return res.status(403).json({ error: 'Only students marked present for this session can give feedback.' });
     }
 
-    // Re-attach the actual question text server-side, so it can't be spoofed
-    // and stays correct even if questions are edited later.
+    // Re-fetch the actual question defs server-side, so answers can't be
+    // spoofed and stay correct even if questions are edited later.
     const adminQuestions = await FeedbackQuestion.find({}).sort({ order: 1 });
     const adminByOrder = {};
-    adminQuestions.forEach((q) => { adminByOrder[q.order] = q.text; });
+    adminQuestions.forEach((q) => { adminByOrder[q.order] = q; });
     const facultyByOrder = {};
-    session.feedbackQuestions.forEach((q) => { facultyByOrder[q.order] = q.text; });
+    session.feedbackQuestions.forEach((q) => { facultyByOrder[q.order] = q; });
+
+    for (const a of answers) {
+      const def = a.source === 'admin' ? adminByOrder[a.order] : facultyByOrder[a.order];
+      const err = validateAnswerAgainstDef(a, def);
+      if (err) return res.status(400).json({ error: err });
+    }
 
     const builtAnswers = answers.map((a) => {
-      const questionText = a.source === 'admin' ? adminByOrder[a.order] : facultyByOrder[a.order];
-      return {
-        source: a.source,
-        order: a.order,
-        questionText: questionText || '',
-        rating: a.rating,
-        comment: (a.comment || '').trim()
-      };
+      const def = a.source === 'admin' ? adminByOrder[a.order] : facultyByOrder[a.order];
+      return buildStoredAnswer(a, def, a.source);
     });
-
-    if (builtAnswers.some((a) => !a.questionText)) {
-      return res.status(400).json({ error: 'One or more questions could not be matched. Please refresh and try again.' });
-    }
 
     const response = new FeedbackResponse({
       session: session._id,
