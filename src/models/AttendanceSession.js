@@ -54,6 +54,20 @@ const attendanceSessionSchema = new mongoose.Schema({
     trim: true
   },
 
+  // Secret seed used to deterministically derive the rotating code/QR value
+  // shown to the professor (see routes/attendance.js -> codeForWindow()).
+  // Generated once at session start and never changed or rewritten — the
+  // actual displayed code/QR rotates every ROTATE_INTERVAL_MS purely by
+  // computation (HMAC of this seed + a time window index), so rotation
+  // NEVER touches the database. attendanceCode above is kept only as the
+  // static "first" code, for backward compatibility with any old code that
+  // reads it directly (e.g. history views) — it is no longer what students
+  // actually submit once a session is live and rotating.
+  codeSeed: {
+    type: String,
+    default: null
+  },
+
   status: { type: String, enum: ['active', 'ended'], default: 'active' },
   startedAt: { type: Date, default: Date.now },
   endedAt: { type: Date, default: null },

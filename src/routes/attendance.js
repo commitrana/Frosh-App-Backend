@@ -222,6 +222,65 @@ const generateUniqueSessionCode = async () => {
   throw new Error('Could not generate a unique attendance code — please try again.');
 };
 
+// ============ Rotating code / QR (no DB writes on rotation) ============
+// The code + QR shown to the professor change every ROTATE_INTERVAL_MS, but
+// this is PURE COMPUTATION — nothing is written to Mongo when it "rotates".
+// A session gets one random codeSeed at creation time (stored once). The
+// code for any point in time is HMAC(codeSeed + server secret, windowIndex),
+// mapped onto CODE_CHARS. Given the same seed + window index, the server
+// always derives the same code — so generating (for display) and validating
+// (on /mark) are just the same function called at two different times, with
+// zero extra reads/writes beyond the one-time seed lookup that already
+// happens as part of fetching the session.
+const ROTATE_INTERVAL_MS = 7000;
+
+// Not meant to be secret-critical (this isn't protecting money), just
+// enough that a student can't derive future/past codes without also
+// knowing this. Set ATTENDANCE_CODE_SECRET in env for production.
+const CODE_SECRET = process.env.ATTENDANCE_CODE_SECRET || 'dev-fallback-secret-change-me';
+
+const windowIndexAt = (atTime = Date.now()) => Math.floor(atTime / ROTATE_INTERVAL_MS);
+
+// Deterministically derive the code for a given seed + window index.
+const codeForWindow = (codeSeed, windowIndex) => {
+  const hmac = crypto
+    .createHmac('sha256', `${codeSeed}:${CODE_SECRET}`)
+    .update(String(windowIndex))
+    .digest();
+  let code = '';
+  for (let i = 0; i < CODE_LENGTH; i++) {
+    code += CODE_CHARS[hmac[i] % CODE_CHARS.length];
+  }
+  return code;
+};
+
+// Current rotating code for a session, plus when it next changes. Falls
+// back to the static attendanceCode for old sessions that predate codeSeed
+// (created before this feature existed) so nothing breaks mid-flight.
+const getCurrentRotatingCode = (session, atTime = Date.now()) => {
+  if (!session.codeSeed) {
+    return { code: session.attendanceCode, windowIndex: null };
+  }
+  const windowIndex = windowIndexAt(atTime);
+  return { code: codeForWindow(session.codeSeed, windowIndex), windowIndex };
+};
+
+// Does `submittedCode` match this session's rotating code right now (or in
+// the immediately adjacent windows, to tolerate scan/typing/network delay)?
+// All comparisons use the SERVER's clock on both the generate side and the
+// validate side, so the student's device clock is irrelevant.
+const RESPONDS_TO_WINDOWS = [0, -1, 1]; // current, previous, next
+const matchesRotatingCode = (session, submittedCode, atTime = Date.now()) => {
+  if (!session.codeSeed) {
+    // Legacy session without a seed — fall back to the static code.
+    return session.attendanceCode === submittedCode;
+  }
+  const windowIndex = windowIndexAt(atTime);
+  return RESPONDS_TO_WINDOWS.some(
+    (offset) => codeForWindow(session.codeSeed, windowIndex + offset) === submittedCode
+  );
+};
+
 // Distance between two lat/lng points, in meters.
 function haversineMeters(a, b) {
   const R = 6371000; // Earth radius in meters
@@ -257,7 +316,8 @@ router.post('/session/start', authFaculty, async (req, res) => {
       anchorLocation: { lat: professorLocation.lat, lng: professorLocation.lng },
       anchorAccuracy: professorAccuracy || 20,
       radiusMeters: radiusMeters || 30,
-      attendanceCode: await generateUniqueSessionCode()
+      attendanceCode: await generateUniqueSessionCode(),
+      codeSeed: crypto.randomBytes(16).toString('hex')
     });
 
     await session.save();
@@ -316,6 +376,48 @@ router.get('/session/:id', authFaculty, async (req, res) => {
     res.json({ session });
   } catch (error) {
     console.error('❌ Get attendance session error:', error);
+    res.status(500).json({ error: 'Server error: ' + error.message });
+  }
+});
+
+// ============ FACULTY: Current Rotating Code + QR ============
+// Polled every ROTATE_INTERVAL_MS by AttendanceSessionScreen. Pure
+// computation — reads the session once, derives the code, no writes.
+router.get('/session/:id/rotating-code', authFaculty, async (req, res) => {
+  try {
+    const session = await AttendanceSession.findOne({ _id: req.params.id, faculty: req.faculty.id })
+      .select('status codeSeed attendanceCode');
+    if (!session) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    if (session.status !== 'active') {
+      return res.json({
+        active: false,
+        code: session.attendanceCode,
+        qrValue: JSON.stringify({ s: session._id, c: session.attendanceCode }),
+        rotateSeconds: ROTATE_INTERVAL_MS / 1000,
+        expiresAt: null,
+        serverTime: Date.now()
+      });
+    }
+
+    const now = Date.now();
+    const { code, windowIndex } = getCurrentRotatingCode(session, now);
+    const expiresAt = windowIndex == null ? null : (windowIndex + 1) * ROTATE_INTERVAL_MS;
+
+    res.json({
+      active: true,
+      code,
+      // QR carries the sessionId alongside the code so a scan can look the
+      // session up directly instead of searching every active session.
+      qrValue: JSON.stringify({ s: session._id, c: code }),
+      rotateSeconds: ROTATE_INTERVAL_MS / 1000,
+      expiresAt,
+      serverTime: now
+    });
+  } catch (error) {
+    console.error('❌ Get rotating code error:', error);
     res.status(500).json({ error: 'Server error: ' + error.message });
   }
 });
@@ -712,7 +814,7 @@ router.get('/active', authStudent, async (req, res) => {
 // ============ STUDENT: Enter Code & Mark Attendance ============
 router.post('/mark', authStudent, async (req, res) => {
   try {
-    const { code, studentGPS, studentAccuracy, mocked } = req.body;
+    const { code, sessionId, studentGPS, studentAccuracy, mocked } = req.body;
 
     if (!code || !studentGPS || studentGPS.lat == null || studentGPS.lng == null) {
       return res.status(400).json({ error: 'code and studentGPS {lat, lng} are required' });
@@ -732,11 +834,25 @@ router.post('/mark', authStudent, async (req, res) => {
       });
     }
 
-    // Codes are only guaranteed unique among active sessions, so we match
-    // on status here too rather than looking the code up in isolation —
-    // an old ended session could coincidentally share a code with a new
-    // one, and we want the new (active) one to win.
-    const session = await AttendanceSession.findOne({ attendanceCode: normalizedCode, status: 'active' });
+    // The code rotates every few seconds and is never stored per-window in
+    // Mongo — it's re-derived here the same way it was derived for display
+    // (see getCurrentRotatingCode / matchesRotatingCode above). Two paths:
+    //  - QR scan: sessionId comes along with the code, so we can go
+    //    straight to that session (fast path, one findOne).
+    //  - Typed code: only the 6 chars are known, so we check it against
+    //    every currently active session (there are only ever a handful of
+    //    classes running at once) and take whichever one matches.
+    let session;
+    if (sessionId) {
+      const candidate = await AttendanceSession.findOne({ _id: sessionId, status: 'active' });
+      if (candidate && matchesRotatingCode(candidate, normalizedCode)) {
+        session = candidate;
+      }
+    } else {
+      const activeSessions = await AttendanceSession.find({ status: 'active' });
+      session = activeSessions.find((s) => matchesRotatingCode(s, normalizedCode));
+    }
+
     if (!session) {
       return res.status(404).json({ error: 'Invalid or expired attendance code. Please check with your professor and try again.' });
     }
