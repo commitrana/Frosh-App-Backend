@@ -19,6 +19,12 @@ const ticketSchema = new mongoose.Schema({
     unique: true,
     default: () => crypto.randomBytes(16).toString('hex')
   },
+  // Which slot (1-5) this ticket is for, if the event has slots.
+  // 0 = the event has no slots (booked the plain event).
+  slot: {
+    type: Number,
+    default: 0
+  },
   // A ticket can only ever be scanned once: 'valid' -> 'used'.
   status: {
     type: String,

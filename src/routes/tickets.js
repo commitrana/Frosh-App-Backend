@@ -8,6 +8,7 @@ const { authStudent, authAdmin } = require('../middleware/auth');
 router.post('/register', authStudent, async (req, res) => {
   try {
     const { eventId } = req.body;
+    let slot = req.body.slot !== undefined ? Number(req.body.slot) : 0;
 
     if (!eventId) {
       return res.status(400).json({ error: 'eventId is required' });
@@ -18,19 +19,40 @@ router.post('/register', authStudent, async (req, res) => {
       return res.status(404).json({ error: 'Event not found' });
     }
 
-    // The app only shows the Register button for live events, but that's
-    // just UI — nothing stopped someone from calling this endpoint directly
-    // for an upcoming/past event. Enforce it here too.
-    if (event.status !== 'live') {
-      return res.status(400).json({
-        error: event.status === 'upcoming'
-          ? 'Registration opens once this event goes live.'
-          : 'Registration is closed — this event has ended.'
-      });
+    if (event.slotCount && event.slotCount > 0) {
+      // Slotted event: the student must pick one of the defined slots, and
+      // that specific slot must be live (event.status itself is ignored).
+      if (!Number.isInteger(slot) || slot < 1 || slot > event.slotCount) {
+        return res.status(400).json({ error: 'Please select a valid slot for this event.' });
+      }
+      const slotDef = event.slots.find((s) => s.number === slot);
+      if (!slotDef) {
+        return res.status(400).json({ error: 'Selected slot does not exist for this event.' });
+      }
+      if (slotDef.status !== 'live') {
+        return res.status(400).json({
+          error: slotDef.status === 'upcoming'
+            ? 'Registration opens once this slot goes live.'
+            : 'Registration is closed — this slot has ended.'
+        });
+      }
+    } else {
+      // No slots: behaves exactly as before.
+      slot = 0;
+      if (event.status !== 'live') {
+        return res.status(400).json({
+          error: event.status === 'upcoming'
+            ? 'Registration opens once this event goes live.'
+            : 'Registration is closed — this event has ended.'
+        });
+      }
     }
 
-    // Idempotent: if the student already has a ticket for this event,
-    // just return it instead of creating a duplicate / erroring out.
+    // Idempotent + the constraint the admin asked for: one ticket per
+    // student per event, period — regardless of which slot, so a student
+    // who already booked slot 1 can't also book slot 2 (or vice versa).
+    // The schema's unique {event, student} index enforces this even
+    // under a race; this check just gives a friendly response first.
     const existing = await Ticket.findOne({ event: eventId, student: req.student.id });
     if (existing) {
       return res.json({
@@ -39,7 +61,8 @@ router.post('/register', authStudent, async (req, res) => {
       });
     }
 
-    // Enforce the admin-set capacity, if one was set.
+    // Enforce the admin-set capacity, if one was set. Shared across all
+    // slots of the same event.
     if (event.totalTickets !== null && event.totalTickets !== undefined) {
       if (event.ticketsIssued >= event.totalTickets) {
         return res.status(400).json({ error: 'Sorry, tickets for this event are sold out' });
@@ -48,7 +71,8 @@ router.post('/register', authStudent, async (req, res) => {
 
     const ticket = new Ticket({
       event: eventId,
-      student: req.student.id
+      student: req.student.id,
+      slot
     });
 
     await ticket.save();
@@ -58,7 +82,7 @@ router.post('/register', authStudent, async (req, res) => {
     event.ticketsIssued += 1;
     await event.save();
 
-    console.log(`✅ Ticket issued for event "${event.name}" to student ${req.student.email}`);
+    console.log(`✅ Ticket issued for event "${event.name}"${slot ? ` (slot ${slot})` : ''} to student ${req.student.email}`);
 
     res.status(201).json({
       message: 'Registered successfully! Your ticket is ready.',

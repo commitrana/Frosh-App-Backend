@@ -148,6 +148,76 @@ router.put('/admin/:id/status', authAdmin, async (req, res) => {
 // Add this route
 
 
+// ============ ADMIN: Set how many slots this event has (0-5) ============
+// Resizes event.slots to match, keeping existing slot data where possible.
+router.put('/admin/:id/slot-count', authAdmin, async (req, res) => {
+  try {
+    const slotCount = Number(req.body.slotCount);
+    if (!Number.isInteger(slotCount) || slotCount < 0 || slotCount > 5) {
+      return res.status(400).json({ error: 'slotCount must be an integer between 0 and 5' });
+    }
+
+    const event = await Event.findById(req.params.id);
+    if (!event) {
+      return res.status(404).json({ error: 'Event not found' });
+    }
+
+    const newSlots = [];
+    for (let i = 1; i <= slotCount; i++) {
+      const existing = event.slots.find((s) => s.number === i);
+      newSlots.push(existing || { number: i, time: '', venue: '', status: 'upcoming' });
+    }
+
+    event.slotCount = slotCount;
+    event.slots = newSlots;
+    event.updatedAt = new Date();
+    await event.save();
+
+    console.log(`✅ Event "${event.name}" slot count set to ${slotCount}`);
+    res.json({ message: 'Slot count updated successfully!', event });
+  } catch (error) {
+    console.error('❌ Update slot count error:', error);
+    res.status(500).json({ error: 'Server error: ' + error.message });
+  }
+});
+
+// ============ ADMIN: Update one slot's time/venue/status ============
+router.put('/admin/:id/slot/:number', authAdmin, async (req, res) => {
+  try {
+    const number = Number(req.params.number);
+    const { time, venue, status } = req.body;
+
+    const event = await Event.findById(req.params.id);
+    if (!event) {
+      return res.status(404).json({ error: 'Event not found' });
+    }
+
+    const slot = event.slots.find((s) => s.number === number);
+    if (!slot) {
+      return res.status(404).json({ error: 'Slot not found on this event' });
+    }
+
+    if (time !== undefined) slot.time = time;
+    if (venue !== undefined) slot.venue = venue;
+    if (status !== undefined) {
+      if (!['live', 'upcoming', 'past'].includes(status)) {
+        return res.status(400).json({ error: 'Status must be live, upcoming, or past' });
+      }
+      slot.status = status;
+    }
+
+    event.updatedAt = new Date();
+    await event.save();
+
+    console.log(`✅ Event "${event.name}" slot ${number} updated`);
+    res.json({ message: 'Slot updated successfully!', event });
+  } catch (error) {
+    console.error('❌ Update slot error:', error);
+    res.status(500).json({ error: 'Server error: ' + error.message });
+  }
+});
+
+
 // routes/events.js
 // ============ ADMIN: Upload/replace event cover photo ============
 router.post('/admin/:id/upload-image', authAdmin, upload.single('image'), async (req, res) => {

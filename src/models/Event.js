@@ -58,6 +58,27 @@ const eventSchema = new mongoose.Schema({
     type: String,
     default: null
   },
+  // ---- Slots (optional sub-sessions within one event) ----
+  // 0 = no slots, the event behaves exactly as before (single date/time/venue/status).
+  // 1-5 = the app shows a slot picker instead, each slot with its own
+  // time/venue/status. Ticket capacity/count stay shared at the event level.
+  slotCount: {
+    type: Number,
+    default: 0,
+    min: 0,
+    max: 5
+  },
+  slots: {
+    type: [
+      {
+        number: { type: Number, required: true, min: 1, max: 5 },
+        time: { type: String, default: '', trim: true },
+        venue: { type: String, default: '', trim: true },
+        status: { type: String, enum: ['live', 'upcoming', 'past'], default: 'upcoming' }
+      }
+    ],
+    default: []
+  },
 });
 
 // Indexes
