@@ -9,8 +9,7 @@ const { authAdmin } = require('../middleware/auth');
 
 // Shared "Clear History" / "Reset" logic lives in one place so neither
 // endpoint duplicates the other's deletion code — see
-// services/adminMaintenanceService.js for exactly what each one touches.
-const { clearHistory, resetApplication } = require('../services/adminMaintenanceService');
+const { clearHistory, resetApplication } = require('../controllers/adminMaintenanceService');
 
 // Admin Login
 router.post('/login', async (req, res) => {
@@ -459,7 +458,6 @@ router.post('/clear-history', authAdmin, async (req, res) => {
 // Everything Clear History does, PLUS deletes every class (faculty
 // timetable/schedule entries) and every event (and its remaining
 // associated data). Reuses clearHistory's core via
-// services/adminMaintenanceService so none of that deletion logic is
 // duplicated here — see that file for the exact breakdown.
 //
 // Student / Faculty / Society / Admin accounts and their login
