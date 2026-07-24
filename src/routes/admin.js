@@ -7,14 +7,10 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const { authAdmin } = require('../middleware/auth');
 
-// Models touched by "Clear History" — kept separate from the requires
-// above so it's obvious at a glance what this endpoint can delete.
-const AttendanceSession = require('../models/AttendanceSession');
-const AttendanceRecord = require('../models/AttendanceRecord');
-const FeedbackQuestion = require('../models/FeedbackQuestion');
-const FeedbackResponse = require('../models/FeedbackResponse');
-const Ticket = require('../models/Ticket');
-const Event = require('../models/Event');
+// Shared "Clear History" / "Reset" logic lives in one place so neither
+// endpoint duplicates the other's deletion code — see
+// services/adminMaintenanceService.js for exactly what each one touches.
+const { clearHistory, resetApplication } = require('../services/adminMaintenanceService');
 
 // Admin Login
 router.post('/login', async (req, res) => {
@@ -443,38 +439,45 @@ router.post('/decline-member/:memberId', async (req, res) => {
 //   - Student / BootcampStudent accounts are left completely alone.
 router.post('/clear-history', authAdmin, async (req, res) => {
   try {
-    const [
-      sessionsResult,
-      recordsResult,
-      questionsResult,
-      responsesResult,
-      ticketsResult,
-      eventsResetResult
-    ] = await Promise.all([
-      AttendanceSession.deleteMany({}),
-      AttendanceRecord.deleteMany({}),
-      FeedbackQuestion.deleteMany({}),
-      FeedbackResponse.deleteMany({}),
-      Ticket.deleteMany({}),
-      Event.updateMany({}, { $set: { ticketsIssued: 0 } })
-    ]);
+    const { deleted, eventsReset } = await clearHistory();
 
     console.log('🧹 Clear History run by admin:', req.admin?.id);
 
     res.json({
       success: true,
       message: 'History cleared successfully.',
-      deleted: {
-        attendanceSessions: sessionsResult.deletedCount,
-        attendanceRecords: recordsResult.deletedCount,
-        feedbackQuestions: questionsResult.deletedCount,
-        feedbackResponses: responsesResult.deletedCount,
-        tickets: ticketsResult.deletedCount
-      },
-      eventsReset: eventsResetResult.modifiedCount
+      deleted,
+      eventsReset
     });
   } catch (error) {
     console.error('❌ Clear history error:', error);
+    res.status(500).json({ error: 'Server error: ' + error.message });
+  }
+});
+
+// ============ Full Reset ============
+// Everything Clear History does, PLUS deletes every class (faculty
+// timetable/schedule entries) and every event (and its remaining
+// associated data). Reuses clearHistory's core via
+// services/adminMaintenanceService so none of that deletion logic is
+// duplicated here — see that file for the exact breakdown.
+//
+// Student / Faculty / Society / Admin accounts and their login
+// credentials are never touched — only the content they created.
+router.post('/reset', authAdmin, async (req, res) => {
+  try {
+    const { deleted, classesReset } = await resetApplication();
+
+    console.log('♻️ Full Reset run by admin:', req.admin?.id);
+
+    res.json({
+      success: true,
+      message: 'Application reset successfully.',
+      deleted,
+      classesReset
+    });
+  } catch (error) {
+    console.error('❌ Reset error:', error);
     res.status(500).json({ error: 'Server error: ' + error.message });
   }
 });
