@@ -58,6 +58,19 @@ const studentSchema = new mongoose.Schema({
     default: null,
     trim: true
   },
+  // Public Supabase Storage URL for the student's profile photo, set via
+  // POST /admin/students/me/photo. null = student hasn't uploaded one yet.
+  profileImage: {
+    type: String,
+    default: null
+  },
+  // Storage path (not the URL) — kept so we can delete the old file from
+  // the Supabase bucket whenever the student replaces their photo, same
+  // pattern as TeamMember.imagePath in models/TeamMember.js.
+  profileImagePath: {
+    type: String,
+    default: null
+  },
   createdAt: { 
     type: Date, 
     default: Date.now 

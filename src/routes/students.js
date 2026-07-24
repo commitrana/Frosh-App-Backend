@@ -1,8 +1,25 @@
 const express = require('express');
 const router = express.Router();
+const multer = require('multer');
 const Student = require('../models/Student');
 const BootcampStudent = require('../models/BootcampStudent');
 const { authAdmin, authStudent } = require('../middleware/auth');
+const { uploadToImageHost, deleteFromImageHost } = require('../utils/supabaseUpload');
+
+// Same multer setup already used for team photo uploads (routes/team.js) —
+// memory storage so we can hand the raw buffer straight to Supabase, with a
+// generous raw-upload cap since the app compresses/resizes the image on the
+// device before it ever reaches this route.
+const photoUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB raw upload cap, pre-compression
+  fileFilter: (req, file, cb) => {
+    if (!file.mimetype.startsWith('image/')) {
+      return cb(new Error('Only image files are allowed'));
+    }
+    cb(null, true);
+  },
+});
 
 // Fetch the student's batch — checks BootcampStudent first (the authoritative
 // source for batch assignments), falls back to Student.batch if not found there.
@@ -35,11 +52,56 @@ router.get('/students/me', authStudent, async (req, res) => {
         motherName: student.motherName,
         rollNo: student.rollNo,
         slotNumber: student.slotNumber,
-        batch
+        batch,
+        profileImage: student.profileImage || null
       }
     });
   } catch (error) {
     console.error('❌ Get my profile error:', error);
+    res.status(500).json({ error: 'Server error: ' + error.message });
+  }
+});
+
+// ============ STUDENT: Upload/replace my profile photo ============
+// multipart/form-data, field name "photo". The app resizes + compresses the
+// image client-side before sending it here, so this route just forwards
+// the buffer straight to Supabase Storage — same pattern as
+// POST /admin/team/upload in routes/team.js.
+router.post('/students/me/photo', authStudent, photoUpload.single('photo'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No image file provided' });
+    }
+
+    const student = await Student.findById(req.student.id);
+    if (!student) {
+      return res.status(404).json({ error: 'Student not found.' });
+    }
+
+    const { url, path } = await uploadToImageHost(req.file.buffer);
+    const oldPath = student.profileImagePath;
+
+    student.profileImage = url;
+    student.profileImagePath = path;
+    student.updatedAt = new Date();
+    await student.save();
+
+    console.log(`✅ Profile photo updated for: ${student.name}`);
+
+    res.json({
+      message: 'Profile photo updated successfully!',
+      profileImage: url
+    });
+
+    // Clean up the previous photo from the bucket after responding, so a
+    // failure here never blocks or slows down the student's request.
+    if (oldPath) {
+      deleteFromImageHost(oldPath).catch((err) =>
+        console.error('⚠️ Failed to delete old profile photo:', err.message)
+      );
+    }
+  } catch (error) {
+    console.error('❌ Upload profile photo error:', error);
     res.status(500).json({ error: 'Server error: ' + error.message });
   }
 });
@@ -519,7 +581,8 @@ router.post('/student-login', async (req, res) => {
         motherName: student.motherName,
         dob: student.dob,
         slotNumber: student.slotNumber,
-        batch: batch  // ✅ BATCH ADDED!
+        batch: batch,  // ✅ BATCH ADDED!
+        profileImage: student.profileImage || null
       }
     });
     
