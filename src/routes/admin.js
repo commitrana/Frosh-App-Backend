@@ -5,6 +5,16 @@ const Admin = require('../models/Admin');
 const Member = require('../models/Member');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
+const { authAdmin } = require('../middleware/auth');
+
+// Models touched by "Clear History" — kept separate from the requires
+// above so it's obvious at a glance what this endpoint can delete.
+const AttendanceSession = require('../models/AttendanceSession');
+const AttendanceRecord = require('../models/AttendanceRecord');
+const FeedbackQuestion = require('../models/FeedbackQuestion');
+const FeedbackResponse = require('../models/FeedbackResponse');
+const Ticket = require('../models/Ticket');
+const Event = require('../models/Event');
 
 // Admin Login
 router.post('/login', async (req, res) => {
@@ -418,4 +428,55 @@ router.post('/decline-member/:memberId', async (req, res) => {
     res.status(500).json({ error: 'Server error: ' + error.message });
   }
 });
+
+// ============ Clear History ============
+// Wipes test/transactional data accumulated from running attendance
+// sessions and event registrations, WITHOUT touching the underlying
+// definitions:
+//   - AttendanceSession / AttendanceRecord -> deleted (the actual class
+//     "runs" used for testing). Faculty, FacultyTimetable, Batch stay.
+//   - FeedbackQuestion / FeedbackResponse   -> deleted (both the fixed
+//     admin questions and everything students submitted).
+//   - Ticket                                -> deleted (event
+//     registrations). The Event documents themselves are NOT deleted;
+//     each event's ticketsIssued counter is reset to 0 to match.
+//   - Student / BootcampStudent accounts are left completely alone.
+router.post('/clear-history', authAdmin, async (req, res) => {
+  try {
+    const [
+      sessionsResult,
+      recordsResult,
+      questionsResult,
+      responsesResult,
+      ticketsResult,
+      eventsResetResult
+    ] = await Promise.all([
+      AttendanceSession.deleteMany({}),
+      AttendanceRecord.deleteMany({}),
+      FeedbackQuestion.deleteMany({}),
+      FeedbackResponse.deleteMany({}),
+      Ticket.deleteMany({}),
+      Event.updateMany({}, { $set: { ticketsIssued: 0 } })
+    ]);
+
+    console.log('🧹 Clear History run by admin:', req.admin?.id);
+
+    res.json({
+      success: true,
+      message: 'History cleared successfully.',
+      deleted: {
+        attendanceSessions: sessionsResult.deletedCount,
+        attendanceRecords: recordsResult.deletedCount,
+        feedbackQuestions: questionsResult.deletedCount,
+        feedbackResponses: responsesResult.deletedCount,
+        tickets: ticketsResult.deletedCount
+      },
+      eventsReset: eventsResetResult.modifiedCount
+    });
+  } catch (error) {
+    console.error('❌ Clear history error:', error);
+    res.status(500).json({ error: 'Server error: ' + error.message });
+  }
+});
+
 module.exports = router;
