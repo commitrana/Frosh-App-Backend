@@ -43,9 +43,23 @@ mongoose.connect(process.env.MONGODB_URI, {
   w: 'majority',
   connectTimeoutMS: 30000
 })
-.then(() => {
+.then(async () => {
   console.log('✅ MongoDB Atlas Connected Successfully!');
   console.log('📦 Database: MongoDB Atlas (Cloud)');
+
+  // Reconciles actual DB indexes with what each schema currently defines —
+  // drops indexes for fields that were removed/renamed (e.g. the old
+  // unique qrToken index, replaced by attendanceCode) and creates any
+  // newly-declared ones. Runs once per boot; safe and near-instant on
+  // collections this size. Add more models here if the same class of
+  // issue shows up elsewhere.
+  try {
+    const AttendanceSession = require('./models/AttendanceSession');
+    await AttendanceSession.syncIndexes();
+    console.log('✅ AttendanceSession indexes synced');
+  } catch (err) {
+    console.error('⚠️ Index sync failed (server will still run):', err.message);
+  }
 })
 .catch(err => {
   console.error('❌ MongoDB Connection Error:', err.message);
