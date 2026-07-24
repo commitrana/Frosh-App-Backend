@@ -78,7 +78,7 @@ router.post('/students/me/photo', authStudent, photoUpload.single('photo'), asyn
       return res.status(404).json({ error: 'Student not found.' });
     }
 
-    const { url, path } = await uploadToImageHost(req.file.buffer);
+    const { url, path } = await uploadToImageHost(req.file.buffer, 'students');
     const oldPath = student.profileImagePath;
 
     student.profileImage = url;

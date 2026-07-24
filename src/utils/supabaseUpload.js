@@ -21,15 +21,22 @@ const BUCKET = 'team-photos';
  * returns the public URL. Keeping every photo small (WebP, capped at
  * 500x500) is what makes serving ~100 images to 4,000+ students sustainable
  * on the free tier — see the note in the chat response for the bandwidth math.
+ *
+ * @param {Buffer} buffer - raw image bytes
+ * @param {string} [folder='members'] - subfolder within the bucket. Defaults
+ *   to 'members' so every existing caller (routes/team.js) keeps working
+ *   exactly as before with zero changes on their end. Pass a different
+ *   folder (e.g. 'students') to keep photo sets organized separately
+ *   within the same bucket/quota.
  */
-async function uploadToImageHost(buffer) {
+async function uploadToImageHost(buffer, folder = 'members') {
   const optimized = await sharp(buffer)
     .resize(500, 500, { fit: 'cover' })
     .webp({ quality: 75 })
     .toBuffer();
 
   const fileName = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.webp`;
-  const path = `members/${fileName}`;
+  const path = `${folder}/${fileName}`;
 
   const { error } = await supabase.storage
     .from(BUCKET)
