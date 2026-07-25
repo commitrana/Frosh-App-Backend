@@ -232,7 +232,7 @@ const generateUniqueSessionCode = async () => {
 // (on /mark) are just the same function called at two different times, with
 // zero extra reads/writes beyond the one-time seed lookup that already
 // happens as part of fetching the session.
-const ROTATE_INTERVAL_MS = 7000;
+const ROTATE_INTERVAL_MS = 10000;
 
 // Not meant to be secret-critical (this isn't protecting money), just
 // enough that a student can't derive future/past codes without also
