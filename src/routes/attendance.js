@@ -544,6 +544,39 @@ router.post('/session/:id/end', authFaculty, async (req, res) => {
 
     console.log(`✅ Attendance session ended: ${session.subject}`);
 
+    // ---- Auto-clear one-off schedule slots ----
+    // A lecture in Faculty.timetable.schedule[day][slot] is "recurring"
+    // (repeats weekly, unchanged) by default — those are left exactly as
+    // they are, so normal weekly classes keep working like before.
+    // Admin can instead mark a lecture `recurring: false` (a class whose
+    // batch/time/venue is different every week). For those, the moment
+    // attendance is ended the slot is wiped from the live schedule — the
+    // full record of what actually happened stays forever in this
+    // AttendanceSession + its AttendanceRecords, completely untouched.
+    // This just clears the *upcoming* view so admin/faculty/students never
+    // see stale batch/venue info, and admin never has to remember to
+    // delete/edit it before next week — they simply add a fresh slot
+    // whenever the next occurrence is scheduled.
+    try {
+      if (session.day && session.slot) {
+        const faculty = await Faculty.findById(session.faculty);
+        const lecture = faculty?.timetable?.schedule?.[session.day]?.[session.slot];
+        if (lecture && lecture.recurring === false) {
+          delete faculty.timetable.schedule[session.day][session.slot];
+          if (Object.keys(faculty.timetable.schedule[session.day]).length === 0) {
+            delete faculty.timetable.schedule[session.day];
+          }
+          faculty.markModified('timetable');
+          await faculty.save();
+          console.log(`🔄 One-off slot cleared after session end: ${session.day} · ${session.slot} (faculty ${faculty._id})`);
+        }
+      }
+    } catch (clearErr) {
+      // Never let schedule cleanup fail the actual "end attendance" action —
+      // the session itself already ended successfully above.
+      console.error('⚠️ Failed to auto-clear one-off schedule slot:', clearErr);
+    }
+
     res.json({ message: 'Session ended', session });
   } catch (error) {
     console.error('❌ End attendance session error:', error);
