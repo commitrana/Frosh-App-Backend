@@ -232,7 +232,7 @@ const generateUniqueSessionCode = async () => {
 // (on /mark) are just the same function called at two different times, with
 // zero extra reads/writes beyond the one-time seed lookup that already
 // happens as part of fetching the session.
-const ROTATE_INTERVAL_MS = 7000;
+const ROTATE_INTERVAL_MS = 10000;
 
 // Not meant to be secret-critical (this isn't protecting money), just
 // enough that a student can't derive future/past codes without also
@@ -297,6 +297,13 @@ function haversineMeters(a, b) {
   return R * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
 }
 
+// Weekly-schedule day names, used to compare a lecture's scheduled `day`
+// against the server's current day-of-week. Kept in this exact casing
+// ("Monday", not "monday") to match what the app sends/displays, though
+// the comparison below is done case-insensitively anyway.
+const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const getTodayDayName = () => DAY_NAMES[new Date().getDay()];
+
 // ============ FACULTY: Start Attendance Session ============
 router.post('/session/start', authFaculty, async (req, res) => {
   try {
@@ -304,6 +311,41 @@ router.post('/session/start', authFaculty, async (req, res) => {
 
     if (!subject || !professorLocation || professorLocation.lat == null || professorLocation.lng == null) {
       return res.status(400).json({ error: 'subject and professorLocation {lat, lng} are required' });
+    }
+
+    // ---- Recurring-class guardrails ----
+    // A scheduled lecture (has both day + slot) is recurring weekly by
+    // default, so it should only ever be startable (a) on its own scheduled
+    // day of the week, and (b) once per calendar day. Both are enforced
+    // here server-side — never trust the client's local clock/cache alone.
+    if (day && slot) {
+      const todayName = getTodayDayName();
+      if (day.trim().toLowerCase() !== todayName.toLowerCase()) {
+        return res.status(400).json({
+          error: `This class is scheduled for ${day}. You can only start attendance on ${day}.`
+        });
+      }
+
+      const startOfDay = new Date();
+      startOfDay.setHours(0, 0, 0, 0);
+      const endOfDay = new Date();
+      endOfDay.setHours(23, 59, 59, 999);
+
+      const existingToday = await AttendanceSession.findOne({
+        faculty: req.faculty.id,
+        day,
+        slot,
+        startedAt: { $gte: startOfDay, $lte: endOfDay }
+      });
+
+      if (existingToday) {
+        return res.status(409).json({
+          error: existingToday.status === 'active'
+            ? 'Attendance is already running for this class today.'
+            : 'Attendance for this class has already been taken today. It will open again on the next scheduled day.',
+          session: existingToday
+        });
+      }
     }
 
     const session = new AttendanceSession({
@@ -543,6 +585,39 @@ router.post('/session/:id/end', authFaculty, async (req, res) => {
     await session.save();
 
     console.log(`✅ Attendance session ended: ${session.subject}`);
+
+    // ---- Auto-clear one-off schedule slots ----
+    // A lecture in Faculty.timetable.schedule[day][slot] is "recurring"
+    // (repeats weekly, unchanged) by default — those are left exactly as
+    // they are, so normal weekly classes keep working like before.
+    // Admin can instead mark a lecture `recurring: false` (a class whose
+    // batch/time/venue is different every week). For those, the moment
+    // attendance is ended the slot is wiped from the live schedule — the
+    // full record of what actually happened stays forever in this
+    // AttendanceSession + its AttendanceRecords, completely untouched.
+    // This just clears the *upcoming* view so admin/faculty/students never
+    // see stale batch/venue info, and admin never has to remember to
+    // delete/edit it before next week — they simply add a fresh slot
+    // whenever the next occurrence is scheduled.
+    try {
+      if (session.day && session.slot) {
+        const faculty = await Faculty.findById(session.faculty);
+        const lecture = faculty?.timetable?.schedule?.[session.day]?.[session.slot];
+        if (lecture && lecture.recurring === false) {
+          delete faculty.timetable.schedule[session.day][session.slot];
+          if (Object.keys(faculty.timetable.schedule[session.day]).length === 0) {
+            delete faculty.timetable.schedule[session.day];
+          }
+          faculty.markModified('timetable');
+          await faculty.save();
+          console.log(`🔄 One-off slot cleared after session end: ${session.day} · ${session.slot} (faculty ${faculty._id})`);
+        }
+      }
+    } catch (clearErr) {
+      // Never let schedule cleanup fail the actual "end attendance" action —
+      // the session itself already ended successfully above.
+      console.error('⚠️ Failed to auto-clear one-off schedule slot:', clearErr);
+    }
 
     res.json({ message: 'Session ended', session });
   } catch (error) {
