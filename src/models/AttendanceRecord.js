@@ -42,7 +42,17 @@ const attendanceRecordSchema = new mongoose.Schema({
     type: String,
     enum: ['present', 'absent', null],
     default: null
-  }
+  },
+
+  // A scan/code entry (status present/flagged) only computes eligibility —
+  // the record isn't considered "fully marked" until the student also
+  // submits the mandatory feedback form for this session. Set to false by
+  // routes/attendance.js's /mark endpoint at creation time for present/
+  // flagged scans; flipped to true by routes/feedback.js's /submit once
+  // their FeedbackResponse is saved. Defaults to true so every other path
+  // that creates a record (manual marks by faculty, rejected scans, and
+  // any legacy record) is unaffected and never blocked on feedback.
+  feedbackCompleted: { type: Boolean, default: true }
 });
 
 // One scan per student per session — prevents a student re-scanning

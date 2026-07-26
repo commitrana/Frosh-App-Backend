@@ -6,7 +6,6 @@ const AttendanceRecord = require('../models/AttendanceRecord');
 const BootcampStudent = require('../models/BootcampStudent');
 const Student = require('../models/Student');
 const Faculty = require('../models/Faculty');
-const FeedbackResponse = require('../models/FeedbackResponse');
 const { authAdmin, authFaculty, authStudent } = require('../middleware/auth');
 
 // Fetch the student's batch — checks BootcampStudent first (the authoritative
@@ -64,7 +63,14 @@ const buildSessionRoster = async (session) => {
 
   return students.map((student) => {
     const record = recordByStudentId[student._id.toString()];
-    const isPresent = record && (record.finalStatus === 'present' || (!record.finalStatus && record.status === 'present'));
+    // A scan/code entry only counts as present once the student has also
+    // submitted their mandatory feedback (feedbackCompleted). Manual marks
+    // and legacy records default feedbackCompleted to true, so they're
+    // unaffected.
+    const isPresent =
+      record &&
+      record.feedbackCompleted !== false &&
+      (record.finalStatus === 'present' || (!record.finalStatus && record.status === 'present'));
     return {
       _id: student._id,
       name: student.name,
@@ -72,7 +78,8 @@ const buildSessionRoster = async (session) => {
       branch: student.branch,
       batch: student.batch,
       status: isPresent ? 'present' : 'absent',
-      markedManually: record ? !!record.markedManually : false
+      markedManually: record ? !!record.markedManually : false,
+      pendingFeedback: !!(record && record.feedbackCompleted === false)
     };
   });
 };
@@ -176,7 +183,10 @@ router.get('/student/history', authStudent, async (req, res) => {
 
     const history = sessions.map((session) => {
       const record = recordBySessionId[session._id.toString()];
-      const isPresent = record && (record.finalStatus === 'present' || (!record.finalStatus && record.status === 'present'));
+      const isPresent =
+        record &&
+        record.feedbackCompleted !== false &&
+        (record.finalStatus === 'present' || (!record.finalStatus && record.status === 'present'));
       return {
         _id: session._id,
         subject: session.subject,
@@ -348,6 +358,25 @@ router.post('/session/start', authFaculty, async (req, res) => {
       }
     }
 
+    // ---- Feedback questions must already be set on this timetable slot ----
+    // Feedback is now mandatory and happens right after a student scans/
+    // enters the code (not after the professor ends the session), so the
+    // 5 questions have to exist *before* attendance can start at all. They
+    // live on the faculty's own timetable slot (Faculty.timetable.schedule
+    // [day][slot].feedbackQuestions) — set/edited from ClassDetails or the
+    // Bootcamp screen's "Feedback Questions" section — and get copied onto
+    // this session so they're frozen for this particular run.
+    let slotFeedbackQuestions = [];
+    if (day && slot) {
+      const facultyDoc = await Faculty.findById(req.faculty.id).select('timetable');
+      slotFeedbackQuestions = facultyDoc?.timetable?.schedule?.[day]?.[slot]?.feedbackQuestions || [];
+      if (!Array.isArray(slotFeedbackQuestions) || slotFeedbackQuestions.length !== 5) {
+        return res.status(400).json({
+          error: 'Add exactly 5 feedback questions for this class before starting attendance.'
+        });
+      }
+    }
+
     const session = new AttendanceSession({
       faculty: req.faculty.id,
       subject: subject.trim(),
@@ -359,7 +388,12 @@ router.post('/session/start', authFaculty, async (req, res) => {
       anchorAccuracy: professorAccuracy || 20,
       radiusMeters: radiusMeters || 30,
       attendanceCode: await generateUniqueSessionCode(),
-      codeSeed: crypto.randomBytes(16).toString('hex')
+      codeSeed: crypto.randomBytes(16).toString('hex'),
+      feedbackQuestions: slotFeedbackQuestions,
+      // Feedback opens immediately — students answer it right after their
+      // scan/code step, there's no separate "start feedback" action anymore.
+      feedbackStatus: slotFeedbackQuestions.length === 5 ? 'open' : 'not_set',
+      feedbackStartedAt: slotFeedbackQuestions.length === 5 ? new Date() : null
     });
 
     await session.save();
@@ -712,7 +746,8 @@ router.get('/session/:id/roster', authFaculty, async (req, res) => {
         batch: s.batch,
         status: record ? record.status : 'absent',
         markedManually: record ? !!record.markedManually : false,
-        recordId: record ? record._id : null
+        recordId: record ? record._id : null,
+        pendingFeedback: !!(record && record.feedbackCompleted === false)
       };
     });
 
@@ -795,31 +830,20 @@ router.get('/active', authStudent, async (req, res) => {
       .populate('faculty', 'name department');
 
     if (!session) {
-      // No live attendance right now — check whether this student has
-      // feedback waiting for them (a session they attended where the
-      // faculty has since started feedback and they haven't submitted yet).
-      const myRecords = await AttendanceRecord.find({
+      // No live attendance right now — check whether this student scanned
+      // for a session (still active or since ended) but never finished the
+      // mandatory feedback for it.
+      const pendingRecord = await AttendanceRecord.findOne({
         student: req.student.id,
-        status: { $in: ['present', 'flagged'] }
-      }).select('session');
-      const sessionIds = myRecords.map((r) => r.session);
+        status: { $in: ['present', 'flagged'] },
+        feedbackCompleted: false
+      }).sort({ scannedAt: -1 });
 
-      const feedbackSession = sessionIds.length
-        ? await AttendanceSession.findOne({ _id: { $in: sessionIds }, feedbackStatus: 'open' })
-            .sort({ feedbackStartedAt: -1 })
-            .populate('faculty', 'name department')
+      const feedbackSession = pendingRecord
+        ? await AttendanceSession.findById(pendingRecord.session).populate('faculty', 'name department')
         : null;
 
       if (!feedbackSession) {
-        return res.json({ session: null, alreadyMarked: false, myStatus: null, type: 'attendance' });
-      }
-
-      const alreadySubmitted = await FeedbackResponse.findOne({
-        session: feedbackSession._id,
-        student: req.student.id
-      });
-
-      if (alreadySubmitted) {
         return res.json({ session: null, alreadyMarked: false, myStatus: null, type: 'attendance' });
       }
 
@@ -865,6 +889,27 @@ router.get('/active', authStudent, async (req, res) => {
       session: session._id,
       student: req.student.id
     });
+
+    // Already scanned for this live session but hasn't finished the
+    // mandatory feedback yet (e.g. they backgrounded the app mid-form) —
+    // send them straight back to the feedback form instead of the scan
+    // screen, since re-scanning would just fail on the duplicate-record check.
+    if (existingRecord && existingRecord.feedbackCompleted === false) {
+      return res.json({
+        type: 'feedback',
+        session: {
+          _id: session._id,
+          subject: session.subject,
+          venue: session.venue,
+          day: session.day,
+          slot: session.slot,
+          startedAt: session.startedAt,
+          faculty: session.faculty ? { name: session.faculty.name, department: session.faculty.department } : null
+        },
+        alreadyMarked: false,
+        myStatus: existingRecord.status
+      });
+    }
 
     res.json({
       type: 'attendance',
@@ -957,28 +1002,41 @@ router.post('/mark', authStudent, async (req, res) => {
       status = 'rejected';
     }
 
+    // Present/flagged scans are step 1 only — this student still owes the
+    // mandatory feedback form before they're actually counted as marked
+    // (see feedback.js /submit, which flips this to true). Rejected scans
+    // have nothing to complete, so they default to true (not blocking).
+    const needsFeedback = status === 'present' || status === 'flagged';
+    const hasQuestions = Array.isArray(session.feedbackQuestions) && session.feedbackQuestions.length === 5;
+
     const record = new AttendanceRecord({
       session: session._id,
       student: req.student.id,
       studentLocation: { lat: studentGPS.lat, lng: studentGPS.lng },
       studentAccuracy: accuracy,
       distanceFromAnchor: Math.round(distance),
-      status
+      status,
+      feedbackCompleted: needsFeedback && hasQuestions ? false : true
     });
 
     await record.save();
 
-    console.log(`✅ Attendance marked: student ${req.student.id} -> ${status} (${Math.round(distance)}m)`);
+    console.log(`✅ Attendance step 1 done: student ${req.student.id} -> ${status} (${Math.round(distance)}m)`);
+
+    const requiresFeedback = needsFeedback && hasQuestions;
 
     res.status(201).json({
-      message:
-        status === 'present'
-          ? 'Marked present!'
-          : status === 'flagged'
-          ? 'Marked present — pending professor review'
-          : "Couldn't verify your location. Please ask your professor to mark you manually.",
+      message: requiresFeedback
+        ? 'Almost done — please fill in the feedback form to complete your attendance.'
+        : status === 'present'
+        ? 'Marked present!'
+        : status === 'flagged'
+        ? 'Marked present — pending professor review'
+        : "Couldn't verify your location. Please ask your professor to mark you manually.",
       status,
-      distanceFromAnchor: Math.round(distance)
+      distanceFromAnchor: Math.round(distance),
+      requiresFeedback,
+      sessionId: session._id
     });
   } catch (error) {
     // Duplicate key = this student already scanned for this session

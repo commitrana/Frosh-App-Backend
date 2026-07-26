@@ -4,6 +4,7 @@ const FeedbackQuestion = require('../models/FeedbackQuestion');
 const FeedbackResponse = require('../models/FeedbackResponse');
 const AttendanceSession = require('../models/AttendanceSession');
 const AttendanceRecord = require('../models/AttendanceRecord');
+const Faculty = require('../models/Faculty');
 const { authAdmin, authFaculty, authStudent } = require('../middleware/auth');
 
 const QUESTION_TYPES = [
@@ -188,6 +189,88 @@ router.get('/admin/session/:id/responses', authAdmin, async (req, res) => {
     res.json({ session, count: responses.length, responses });
   } catch (error) {
     console.error('❌ Admin get session feedback responses error:', error);
+    res.status(500).json({ error: 'Server error: ' + error.message });
+  }
+});
+
+// ============================================================
+// FACULTY: pre-set 5 questions on a timetable slot (before attendance
+// even starts), editable any time — including while a session for that
+// slot is currently active.
+// ============================================================
+
+// GET the draft questions already saved for one of the faculty's own
+// timetable slots (may be empty if never set).
+router.get('/slot/questions', authFaculty, async (req, res) => {
+  try {
+    const { day, slot } = req.query;
+    if (!day || !slot) {
+      return res.status(400).json({ error: 'day and slot query params are required' });
+    }
+
+    const faculty = await Faculty.findById(req.faculty.id).select('timetable');
+    const lecture = faculty?.timetable?.schedule?.[day]?.[slot];
+    if (!lecture) {
+      return res.status(404).json({ error: 'No class found for this day/slot on your timetable.' });
+    }
+
+    res.json({ questions: lecture.feedbackQuestions || [] });
+  } catch (error) {
+    console.error('❌ Get slot feedback questions error:', error);
+    res.status(500).json({ error: 'Server error: ' + error.message });
+  }
+});
+
+// Save (create or edit) exactly 5 questions for one of the faculty's own
+// timetable slots. Optionally also patches a currently-active session for
+// that same slot, so an edit made mid-class reaches students immediately
+// instead of only applying next week.
+// Body: { day, slot, questions: [...5], sessionId? }
+router.put('/slot/questions', authFaculty, async (req, res) => {
+  try {
+    const { day, slot, questions, sessionId } = req.body;
+    if (!day || !slot) {
+      return res.status(400).json({ error: 'day and slot are required' });
+    }
+    const err = validateQuestionDefs(questions);
+    if (err) return res.status(400).json({ error: err });
+
+    const faculty = await Faculty.findById(req.faculty.id);
+    const lecture = faculty?.timetable?.schedule?.[day]?.[slot];
+    if (!lecture) {
+      return res.status(404).json({ error: 'No class found for this day/slot on your timetable.' });
+    }
+
+    const cleaned = questions.map((q, i) => cleanQuestionDef(q, i + 1));
+    lecture.feedbackQuestions = cleaned;
+    faculty.markModified('timetable');
+    await faculty.save();
+
+    // If this slot's attendance session is currently running, push the
+    // edit into it too so it's not stuck with the stale copy taken at
+    // session-start time.
+    if (sessionId) {
+      const liveSession = await AttendanceSession.findOne({
+        _id: sessionId,
+        faculty: req.faculty.id,
+        day,
+        slot,
+        status: 'active'
+      });
+      if (liveSession) {
+        liveSession.feedbackQuestions = cleaned;
+        if (liveSession.feedbackStatus === 'not_set') {
+          liveSession.feedbackStatus = 'open';
+          liveSession.feedbackStartedAt = new Date();
+        }
+        await liveSession.save();
+      }
+    }
+
+    console.log(`✅ Faculty ${req.faculty.id} saved feedback questions for slot ${day} · ${slot}`);
+    res.json({ message: 'Feedback questions saved', questions: cleaned });
+  } catch (error) {
+    console.error('❌ Save slot feedback questions error:', error);
     res.status(500).json({ error: 'Server error: ' + error.message });
   }
 });
@@ -395,6 +478,12 @@ router.post('/session/:id/submit', authStudent, async (req, res) => {
       answers: builtAnswers
     });
     await response.save();
+
+    // This is the "commit" step — the scan/code step only computed
+    // eligibility (present/flagged); the attendance record only counts as
+    // fully marked now that feedback is in.
+    record.feedbackCompleted = true;
+    await record.save();
 
     console.log(`✅ Feedback submitted: student ${req.student.id} -> session ${session._id}`);
     res.status(201).json({ message: 'Feedback submitted. Thank you!', response });
