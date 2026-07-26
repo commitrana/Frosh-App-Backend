@@ -91,9 +91,8 @@ router.get('/', async (req, res) => {
   }
 });
 
-// PUT /api/admin/team/:id  (protected — edit name/branch/designation/order,
-// not the photo; re-upload via a new POST + delete the old one if the photo
-// itself needs replacing, keeps this endpoint simple)
+// PUT /api/admin/team/:id  (protected — edit name/branch/designation/order.
+// To replace the photo itself, use PUT /:id/photo below instead.)
 router.put('/:id', adminAuth, async (req, res) => {
   try {
     const { name, branch, designation, order, category } = req.body;
@@ -115,6 +114,42 @@ router.put('/:id', adminAuth, async (req, res) => {
     res.json({ message: 'Team member updated successfully!', member });
   } catch (error) {
     console.error('❌ Update team member error:', error);
+    res.status(500).json({ error: 'Server error: ' + error.message });
+  }
+});
+
+// PUT /api/admin/team/:id/photo  (protected — replace just the photo on an
+// existing member, so re-cropping/resizing doesn't mean deleting the whole
+// record and re-entering name/branch/designation from scratch)
+// multipart/form-data: image
+router.put('/:id/photo', adminAuth, upload.single('image'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'Image file is required' });
+    }
+
+    const member = await TeamMember.findById(req.params.id);
+    if (!member) return res.status(404).json({ error: 'Team member not found' });
+
+    // Upload the new photo first — if this fails, the member keeps their
+    // existing photo instead of ending up with none.
+    const { url, path } = await uploadToImageHost(req.file.buffer);
+    const oldImagePath = member.imagePath;
+
+    member.imageUrl = url;
+    member.imagePath = path;
+    await member.save();
+
+    if (oldImagePath) {
+      await deleteFromImageHost(oldImagePath).catch((err) =>
+        console.error('⚠️ Failed to delete old team photo:', err)
+      );
+    }
+
+    console.log('✅ Team member photo replaced:', member.name);
+    res.json({ message: 'Photo updated successfully!', member });
+  } catch (error) {
+    console.error('❌ Replace team photo error:', error);
     res.status(500).json({ error: 'Server error: ' + error.message });
   }
 });
