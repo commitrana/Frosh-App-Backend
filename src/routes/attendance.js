@@ -506,11 +506,17 @@ router.get('/session/:id/live', authFaculty, async (req, res) => {
       return res.status(404).json({ error: 'Session not found' });
     }
 
+    // A record only really counts as "present"/"flagged" once the student has
+    // cleared the mandatory feedback step (see POST /mark below and
+    // feedback.js's /submit) — scanning alone just creates a pending record.
+    // Records that never required feedback (feedbackCompleted defaults to
+    // true for them — rejected scans, or sessions with no feedback
+    // questions configured) are unaffected by this filter.
     const [presentCount, flaggedCount, rejectedCount, totalMarked] = await Promise.all([
-      AttendanceRecord.countDocuments({ session: session._id, status: 'present' }),
-      AttendanceRecord.countDocuments({ session: session._id, status: 'flagged' }),
+      AttendanceRecord.countDocuments({ session: session._id, status: 'present', feedbackCompleted: true }),
+      AttendanceRecord.countDocuments({ session: session._id, status: 'flagged', feedbackCompleted: true }),
       AttendanceRecord.countDocuments({ session: session._id, status: 'rejected' }),
-      AttendanceRecord.countDocuments({ session: session._id })
+      AttendanceRecord.countDocuments({ session: session._id, feedbackCompleted: true })
     ]);
 
     res.json({
@@ -534,9 +540,15 @@ router.get('/session/:id/present', authFaculty, async (req, res) => {
       return res.status(404).json({ error: 'Session not found' });
     }
 
+    // Scanning the QR/code is only step 1 (see POST /mark) — a student isn't
+    // actually counted present until they've also cleared the mandatory
+    // feedback step (feedbackCompleted flips to true in feedback.js's
+    // /submit). Without this filter, everyone who merely scanned showed up
+    // here immediately, before finishing feedback.
     const records = await AttendanceRecord.find({
       session: session._id,
-      status: 'present'
+      status: 'present',
+      feedbackCompleted: true
     })
       .populate('student', 'name rollNo branch')
       .sort({ scannedAt: 1 });
