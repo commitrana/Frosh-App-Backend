@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const bcrypt = require('bcryptjs');
 
 const studentSchema = new mongoose.Schema({
   name: { 
@@ -97,6 +98,54 @@ studentSchema.methods.generatePassword = function() {
   }
   this.password = password;
   return password;
+};
+
+// Hash the password before saving — same backward-compatible pattern used by
+// Member/Society: if it's already a bcrypt hash (starts with "$2b$"), leave
+// it alone so we never double-hash.
+studentSchema.pre('save', async function(next) {
+  if (!this.isModified('password')) return next();
+  if (!this.password) return next(); // empty password, nothing to hash yet
+  if (this.password.startsWith('$2b$')) return next();
+
+  try {
+    const salt = await bcrypt.genSalt(10);
+    this.password = await bcrypt.hash(this.password, salt);
+    next();
+  } catch (err) {
+    next(err);
+  }
+});
+
+// findByIdAndUpdate / updateOne / updateMany do NOT run the pre('save')
+// hook above, so any route that updates a student via those (e.g. the
+// admin PUT /students/:id and PUT /students/bulk routes) would otherwise
+// be able to write a plain-text password straight into the DB. Catch that
+// here too, for both single-doc and bulk update paths.
+async function hashPasswordInUpdate(next) {
+  const update = this.getUpdate();
+  if (!update) return next();
+
+  const pwd = update.password ?? update.$set?.password;
+  if (!pwd || pwd.startsWith('$2b$')) return next();
+
+  const hashed = await bcrypt.hash(pwd, await bcrypt.genSalt(10));
+  if (update.password !== undefined) update.password = hashed;
+  if (update.$set?.password !== undefined) update.$set.password = hashed;
+  next();
+}
+studentSchema.pre('findOneAndUpdate', hashPasswordInUpdate);
+studentSchema.pre('updateOne', hashPasswordInUpdate);
+studentSchema.pre('updateMany', hashPasswordInUpdate);
+
+// Compare a candidate password against the stored one. Supports legacy
+// plain-text rows so existing accounts keep working until they save again
+// (at which point the pre-save hook above hashes them).
+studentSchema.methods.comparePassword = async function(candidatePassword) {
+  if (this.password && this.password.startsWith('$2b$')) {
+    return bcrypt.compare(candidatePassword, this.password);
+  }
+  return candidatePassword === this.password;
 };
 
 // ✅ IMPORTANT: Yeh line honi chahiye

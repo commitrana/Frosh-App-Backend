@@ -541,7 +541,8 @@ router.post('/student-login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
     
-    if (student.password !== password) {
+    const isMatch = await student.comparePassword(password);
+    if (!isMatch) {
       console.log(`❌ Invalid password for: ${email}`);
       return res.status(401).json({ error: 'Invalid email or password' });
     }
