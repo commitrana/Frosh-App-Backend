@@ -141,7 +141,7 @@ router.get('/societies', async (req, res) => {
 });
 
 // Admin updates society password
-router.put('/update-password/:id', async (req, res) => {
+router.put('/update-password/:id', authAdmin, async (req, res) => {
   try {
     console.log('📨 Update password request for society:', req.params.id);
     

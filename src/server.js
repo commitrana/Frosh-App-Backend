@@ -13,7 +13,6 @@ const adminRoutes = require('./routes/admin');
 const memberRoutes = require('./routes/member');
 const slotsRoutes = require('./routes/slots');
 const studentRoutes = require('./routes/students');  // Student routes in src/routes/
-const studentSelfRoutes = require('./routes/studentSelf'); // Student-facing self-service routes (e.g. reset-password)
 const eventRoutes = require('./routes/events');
 const ticketRoutes = require('./routes/tickets');
 const bootcampRoutes = require('./routes/bootcamp');
@@ -76,8 +75,7 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/member', memberRoutes);
 app.use('/api/society/slots', slotsRoutes);
 app.use('/api/admin', studentRoutes);  // Student routes will be under /api/admin
-app.use('/api/student', studentSelfRoutes); // Self-service routes the app calls while a
-                                             // student is logged in, e.g. POST /reset-password
+app.use('/api/student', studentRoutes); // Also expose under /api/student (e.g. POST /api/student/reset-password, used by the app)
 app.use('/api/events', eventRoutes);   // Public GET for app, /api/events/admin/* for admin management
 app.use('/api/tickets', ticketRoutes); // Student register/my-tickets, Admin scan/stats
 app.use('/api/bootcamp', bootcampRoutes); // Batch assignment: admin manage, student my-batch

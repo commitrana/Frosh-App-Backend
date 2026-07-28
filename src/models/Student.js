@@ -100,13 +100,14 @@ studentSchema.methods.generatePassword = function() {
   return password;
 };
 
-// Hash the password before saving — same backward-compatible pattern used by
-// Member/Society: if it's already a bcrypt hash (starts with "$2b$"), leave
-// it alone so we never double-hash.
-studentSchema.pre('save', async function(next) {
+// Hash password before saving (skip if unchanged or already hashed —
+// same pattern as Society.js / Member.js). This covers every path that
+// sets student.password: admin generate-password, admin bulk import,
+// and the new self-service reset-password route below.
+studentSchema.pre('save', async function (next) {
   if (!this.isModified('password')) return next();
-  if (!this.password) return next(); // empty password, nothing to hash yet
-  if (this.password.startsWith('$2b$')) return next();
+  if (!this.password) return next(); // empty default password, nothing to hash
+  if (this.password.startsWith('$2b$')) return next(); // already hashed
 
   try {
     const salt = await bcrypt.genSalt(10);
@@ -117,31 +118,10 @@ studentSchema.pre('save', async function(next) {
   }
 });
 
-// findByIdAndUpdate / updateOne / updateMany do NOT run the pre('save')
-// hook above, so any route that updates a student via those (e.g. the
-// admin PUT /students/:id and PUT /students/bulk routes) would otherwise
-// be able to write a plain-text password straight into the DB. Catch that
-// here too, for both single-doc and bulk update paths.
-async function hashPasswordInUpdate(next) {
-  const update = this.getUpdate();
-  if (!update) return next();
-
-  const pwd = update.password ?? update.$set?.password;
-  if (!pwd || pwd.startsWith('$2b$')) return next();
-
-  const hashed = await bcrypt.hash(pwd, await bcrypt.genSalt(10));
-  if (update.password !== undefined) update.password = hashed;
-  if (update.$set?.password !== undefined) update.$set.password = hashed;
-  next();
-}
-studentSchema.pre('findOneAndUpdate', hashPasswordInUpdate);
-studentSchema.pre('updateOne', hashPasswordInUpdate);
-studentSchema.pre('updateMany', hashPasswordInUpdate);
-
-// Compare a candidate password against the stored one. Supports legacy
-// plain-text rows so existing accounts keep working until they save again
-// (at which point the pre-save hook above hashes them).
-studentSchema.methods.comparePassword = async function(candidatePassword) {
+// Compare password — supports both freshly-hashed passwords and any
+// legacy plaintext passwords already sitting in the DB from before this
+// hook existed, so existing students aren't locked out.
+studentSchema.methods.comparePassword = async function (candidatePassword) {
   if (this.password && this.password.startsWith('$2b$')) {
     return bcrypt.compare(candidatePassword, this.password);
   }
