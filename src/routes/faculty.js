@@ -183,70 +183,6 @@ router.delete('/admin/:id', authAdmin, async (req, res) => {
   }
 });
 
-// ============ FACULTY: Reset Password (NO AUTH REQUIRED) ============
-router.post('/reset-password', async (req, res) => {
-  try {
-    const { email, oldPassword, newPassword } = req.body;
-
-    // Validate required fields
-    if (!email || !oldPassword || !newPassword) {
-      return res.status(400).json({
-        success: false,
-        message: 'All fields are required: email, oldPassword, newPassword'
-      });
-    }
-
-    // Find faculty by email
-    const faculty = await Faculty.findOne({
-      email: email.toLowerCase().trim()
-    });
-
-    if (!faculty) {
-      // Use same message as wrong password for security
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid email or password.'
-      });
-    }
-
-    // Verify old password
-    const isMatch = await faculty.comparePassword(oldPassword);
-    if (!isMatch) {
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid email or password.'
-      });
-    }
-
-    // Validate new password length
-    if (newPassword.length < 6) {
-      return res.status(400).json({
-        success: false,
-        message: 'New password must be at least 6 characters long.'
-      });
-    }
-
-    // Update password (pre-save hook will hash it automatically)
-    faculty.password = newPassword;
-    faculty.updatedAt = new Date();
-    await faculty.save();
-
-    console.log(`✅ Password reset successful for faculty: ${faculty.email}`);
-
-    return res.json({
-      success: true,
-      message: 'Password updated successfully.'
-    });
-
-  } catch (error) {
-    console.error('❌ Faculty password reset error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Server error: ' + error.message
-    });
-  }
-});
-
 // ============ FACULTY LOGIN ============
 router.post('/login', async (req, res) => {
   try {
@@ -349,6 +285,43 @@ router.get('/profile', async (req, res) => {
       return res.status(401).json({ error: 'Invalid or expired token' });
     }
     console.error('❌ Faculty profile error:', error);
+    res.status(500).json({ error: 'Server error: ' + error.message });
+  }
+});
+
+// ============ FACULTY: Reset password (forgot password) ============
+// Public route — no auth token needed, mirrors routes/students.js.
+router.post('/reset-password', async (req, res) => {
+  try {
+    const { email, newPassword, confirmPassword } = req.body;
+
+    if (!email || !newPassword || !confirmPassword) {
+      return res.status(400).json({ error: 'Email, new password and confirm password are required.' });
+    }
+
+    if (newPassword !== confirmPassword) {
+      return res.status(400).json({ error: 'Passwords do not match.' });
+    }
+
+    if (newPassword.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters.' });
+    }
+
+    const faculty = await Faculty.findOne({ email: email.toLowerCase().trim() });
+    if (!faculty) {
+      return res.status(404).json({ error: 'No faculty account found with this email.' });
+    }
+
+    // Assigning plain text here is safe — the pre-save hook in
+    // models/Faculty.js hashes it automatically (bcrypt) before save.
+    faculty.password = newPassword;
+    await faculty.save();
+
+    console.log(`🔑 Password reset for faculty: ${faculty.email}`);
+
+    res.json({ success: true, message: 'Password updated successfully.' });
+  } catch (error) {
+    console.error('❌ Faculty reset-password error:', error);
     res.status(500).json({ error: 'Server error: ' + error.message });
   }
 });
