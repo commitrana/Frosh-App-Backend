@@ -32,8 +32,7 @@ router.post('/reset-password', authStudent, async (req, res) => {
       return res.status(401).json({ error: 'Current password is incorrect.' });
     }
 
-    student.password = newPassword; // Student's pre('save') hook hashes this with bcrypt
-    student.plainPassword = newPassword; // readable copy for the admin dashboard
+    student.password = newPassword; // stored as plain text
     student.updatedAt = new Date();
     await student.save();
 
