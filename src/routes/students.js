@@ -524,34 +524,45 @@ router.post('/students/create', authAdmin, async (req, res) => {
     });
   }
 });
-// ============ STUDENT RESET PASSWORD (self-service, logged in) ============
-// Student must already be logged in (valid JWT) and confirms their current
-// password before setting a new one. Mounted so the app can call it as
+// ============ STUDENT: Forgot/Reset Password (NO AUTH REQUIRED) ============
+// This is the pre-login "Forgot Password" flow: the student is NOT logged in
+// yet (no JWT exists), so this must NOT be behind authStudent. The student
+// proves ownership of the account by supplying their email + current
+// (old) password instead of a session token. Mirrors the working
+// /api/faculty/reset-password route. Mounted so the app can call it as
 // POST /api/student/reset-password — see server.js.
-router.post('/reset-password', authStudent, async (req, res) => {
+router.post('/reset-password', async (req, res) => {
   try {
-    const { currentPassword, newPassword } = req.body;
+    const { email, oldPassword, newPassword } = req.body;
 
-    if (!currentPassword || !newPassword) {
-      return res.status(400).json({ error: 'Current password and new password are required' });
+    if (!email || !oldPassword || !newPassword) {
+      return res.status(400).json({
+        success: false,
+        error: 'Email, old password and new password are required'
+      });
     }
 
     if (newPassword.length < 6) {
-      return res.status(400).json({ error: 'New password must be at least 6 characters' });
+      return res.status(400).json({
+        success: false,
+        error: 'New password must be at least 6 characters'
+      });
     }
 
-    const student = await Student.findById(req.student.id);
+    const student = await Student.findOne({ email: email.toLowerCase().trim() });
     if (!student) {
-      return res.status(404).json({ error: 'Student not found' });
+      // Same message as wrong password, so we don't leak which emails exist
+      return res.status(401).json({ success: false, error: 'Invalid email or password' });
     }
 
-    const isMatch = await student.comparePassword(currentPassword);
+    const isMatch = await student.comparePassword(oldPassword);
     if (!isMatch) {
-      console.log(`❌ Reset password: current password incorrect for ${student.email}`);
-      return res.status(401).json({ error: 'Current password is incorrect' });
+      console.log(`❌ Reset password: old password incorrect for ${student.email}`);
+      return res.status(401).json({ success: false, error: 'Invalid email or password' });
     }
 
     student.password = newPassword; // pre('save') hook hashes this
+    student.updatedAt = new Date();
     await student.save();
 
     console.log(`✅ Password reset successfully for: ${student.email}`);
@@ -559,7 +570,7 @@ router.post('/reset-password', authStudent, async (req, res) => {
     res.json({ success: true, message: 'Password updated successfully!' });
   } catch (error) {
     console.error('❌ Reset password error:', error);
-    res.status(500).json({ error: 'Server error: ' + error.message });
+    res.status(500).json({ success: false, error: 'Server error: ' + error.message });
   }
 });
 
