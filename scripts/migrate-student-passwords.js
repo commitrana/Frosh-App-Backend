@@ -70,11 +70,18 @@ async function migrateStudents() {
   for (let i = 0; i < plainPasswordStudents.length; i++) {
     const student = plainPasswordStudents[i];
     try {
-      const hashedPassword = await hashPassword(student.password);
+      const plaintext = student.password;
+      const hashedPassword = await hashPassword(plaintext);
       // Update directly via updateOne with the *already hashed* value so
       // the model's own hashing hook (which skips strings starting with
-      // "$2b$") doesn't try to hash it a second time.
-      await Student.updateOne({ _id: student._id }, { $set: { password: hashedPassword } });
+      // "$2b$") doesn't try to hash it a second time. Also copy the
+      // plaintext into plainPassword — otherwise the admin dashboard loses
+      // its only readable copy the moment this runs, since the hash can't
+      // be reversed.
+      await Student.updateOne(
+        { _id: student._id },
+        { $set: { password: hashedPassword, plainPassword: plaintext } }
+      );
       successCount++;
 
       if ((i + 1) % 25 === 0) {

@@ -471,8 +471,14 @@ router.post('/students/generate-all-passwords', authAdmin, async (req, res) => {
     
     for (const student of students) {
       try {
-        // ✅ Check if student already has a password
-        if (student.password && student.password.length > 0) {
+        // ✅ Check if student already has a *displayable* password. We check
+        // plainPassword, not password — `password` is always a bcrypt hash
+        // once set, so it can't tell us whether a readable copy still
+        // exists. A student can end up with a hash but no plainPassword
+        // (e.g. via a migration that hashed old plaintext without copying
+        // it forward first), and in that case there's nothing the admin
+        // dashboard can show, so it should be treated as "no password".
+        if (student.plainPassword && student.plainPassword.length > 0) {
           alreadyHavePassword++;
           continue; // Skip this student, don't change password
         }
