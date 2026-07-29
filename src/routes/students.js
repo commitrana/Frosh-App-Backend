@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const multer = require('multer');
+const bcrypt = require('bcryptjs');
 const Student = require('../models/Student');
 const BootcampStudent = require('../models/BootcampStudent');
 const { authAdmin, authStudent } = require('../middleware/auth');
@@ -177,13 +178,23 @@ router.get('/students', authAdmin, async (req, res) => {
 
     const skip = (page - 1) * limit;
 
-    const [students, total] = await Promise.all([
+    const [studentsRaw, total] = await Promise.all([
       Student.find(searchQuery)
         .sort({ [sortBy]: sortOrder })
         .skip(skip)
         .limit(limit),
       Student.countDocuments(searchQuery)
     ]);
+
+    // The dashboard table reads `password` directly — surface the plaintext
+    // copy there instead of the bcrypt hash. The hash itself is dropped
+    // from the response so it's never sent to the browser at all.
+    const students = studentsRaw.map(s => {
+      const obj = s.toObject();
+      obj.password = obj.plainPassword || '';
+      delete obj.plainPassword;
+      return obj;
+    });
 
     res.json({
       students,
@@ -201,7 +212,13 @@ router.get('/students', authAdmin, async (req, res) => {
 // ============ GET ALL STUDENTS (no pagination) ============
 router.get('/students/all', authAdmin, async (req, res) => {
   try {
-    const students = await Student.find({}).sort({ name: 1 });
+    const studentsRaw = await Student.find({}).sort({ name: 1 });
+    const students = studentsRaw.map(s => {
+      const obj = s.toObject();
+      obj.password = obj.plainPassword || '';
+      delete obj.plainPassword;
+      return obj;
+    });
     res.json({ students });
   } catch (error) {
     console.error('Error fetching all students:', error);
@@ -216,6 +233,19 @@ router.put('/students/:id', authAdmin, async (req, res) => {
     const updates = req.body;
     updates.updatedAt = new Date();
 
+    // findByIdAndUpdate does NOT run the schema's pre('save') hook, so a
+    // manually-edited password (e.g. via the dashboard's double-click-to-edit
+    // cell) has to be hashed here by hand — otherwise it would land in the
+    // DB as raw plaintext and silently break login security.
+    if (typeof updates.password === 'string' && updates.password.length > 0) {
+      const plaintext = updates.password;
+      updates.plainPassword = plaintext; // kept in the clear for the admin dashboard
+      if (!plaintext.startsWith('$2b$')) {
+        const salt = await bcrypt.genSalt(10);
+        updates.password = await bcrypt.hash(plaintext, salt);
+      }
+    }
+
     const student = await Student.findByIdAndUpdate(
       id,
       updates,
@@ -226,7 +256,13 @@ router.put('/students/:id', authAdmin, async (req, res) => {
       return res.status(404).json({ error: 'Student not found' });
     }
 
-    res.json({ student });
+    // Return the plaintext in `password` (never the hash) since the
+    // dashboard's table reads this field straight from the response.
+    const studentObj = student.toObject();
+    studentObj.password = studentObj.plainPassword || '';
+    delete studentObj.plainPassword;
+
+    res.json({ student: studentObj });
   } catch (error) {
     console.error('Error updating student:', error);
     res.status(500).json({ error: 'Failed to update student' });
@@ -297,7 +333,9 @@ router.get('/students/export', authAdmin, async (req, res) => {
     
     students.forEach(student => {
       const row = headers.map(header => {
-        let value = student[header] || '';
+        // The 'password' column shows the plaintext value (kept separately
+        // in plainPassword) rather than the bcrypt hash stored in `password`.
+        let value = (header === 'password' ? student.plainPassword : student[header]) || '';
         if (header === 'dob') {
           value = new Date(value).toISOString().split('T')[0];
         }
@@ -332,10 +370,12 @@ router.post('/students/import', authAdmin, async (req, res) => {
 
     for (const studentData of students) {
       try {
+        const importedPassword = studentData.password?.trim() || '';
         const student = new Student({
           name: studentData.name?.trim() || '',
           email: studentData.email?.trim() || '',
-          password: studentData.password?.trim() || '',
+          password: importedPassword,      // hashed by the pre('save') hook
+          plainPassword: importedPassword || null, // kept in the clear for the admin dashboard
           branch: studentData.branch?.trim() || '',
           phoneNo: studentData.phoneNo?.trim() || '',
           dob: new Date(studentData.dob),
@@ -384,7 +424,8 @@ router.post('/students/generate-password/:id', authAdmin, async (req, res) => {
     console.log(`✅ Student found: ${student.name} (${student.email})`);
     
     const newPassword = generatePasswordFromParents(student);
-    student.password = newPassword;
+    student.password = newPassword;      // hashed by the pre('save') hook
+    student.plainPassword = newPassword; // kept in the clear for the admin dashboard
     student.updatedAt = new Date();
     await student.save();
     
@@ -438,7 +479,8 @@ router.post('/students/generate-all-passwords', authAdmin, async (req, res) => {
         
         // Generate password only for students without password
         const newPassword = generatePasswordFromParents(student);
-        student.password = newPassword;
+        student.password = newPassword;      // hashed by the pre('save') hook
+        student.plainPassword = newPassword; // kept in the clear for the admin dashboard
         student.updatedAt = new Date();
         await student.save();
         generatedCount++;
@@ -561,7 +603,8 @@ router.post('/reset-password', async (req, res) => {
       return res.status(401).json({ success: false, error: 'Invalid email or password' });
     }
 
-    student.password = newPassword; // pre('save') hook hashes this
+    student.password = newPassword;      // pre('save') hook hashes this
+    student.plainPassword = newPassword; // kept in the clear for the admin dashboard
     student.updatedAt = new Date();
     await student.save();
 

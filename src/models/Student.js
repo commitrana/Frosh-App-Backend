@@ -18,6 +18,16 @@ const studentSchema = new mongoose.Schema({
     type: String, 
     default: '' 
   },
+  // Last-known plaintext password, kept ONLY so the admin dashboard can
+  // display/print it for students who need it read out to them (e.g. at
+  // orientation, or a helpdesk reset). Login NEVER reads this field —
+  // comparePassword() always checks the bcrypt hash in `password`. Every
+  // route that sets `password` must also set this to the same plaintext
+  // value, since the hash is one-way and can't be reversed for display.
+  plainPassword: {
+    type: String,
+    default: null
+  },
   branch: { 
     type: String, 
     required: true,
