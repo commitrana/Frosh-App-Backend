@@ -1,7 +1,9 @@
+const dotenv = require('dotenv');
+dotenv.config();
+
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
-const dotenv = require('dotenv');
 const dns = require('dns');
 const facultyRoutes = require('./routes/faculty');
 const batchRoutes = require('./routes/batches');
@@ -22,8 +24,6 @@ const feedbackRoutes = require('./routes/feedback');
 
 // Force Node.js to use system DNS
 dns.setDefaultResultOrder('ipv4first');
-
-dotenv.config();
 
 const app = express();
 
@@ -75,7 +75,6 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/member', memberRoutes);
 app.use('/api/society/slots', slotsRoutes);
 app.use('/api/admin', studentRoutes);  // Student routes will be under /api/admin
-app.use('/api/student', studentRoutes); // Also expose under /api/student (e.g. POST /api/student/reset-password, used by the app)
 app.use('/api/events', eventRoutes);   // Public GET for app, /api/events/admin/* for admin management
 app.use('/api/tickets', ticketRoutes); // Student register/my-tickets, Admin scan/stats
 app.use('/api/bootcamp', bootcampRoutes); // Batch assignment: admin manage, student my-batch
