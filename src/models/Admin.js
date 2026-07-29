@@ -20,24 +20,14 @@ const AdminSchema = new mongoose.Schema({
 });
 
 // Hash password before saving - FIXED VERSION
-AdminSchema.pre('save', function(next) {
-  const admin = this;
-  
-  if (!admin.isModified('password')) return next();
-  
+AdminSchema.pre('save', async function () {
+  if (!this.isModified('password')) return;
+
   console.log('🔐 Hashing password for admin...');
-  
-  bcrypt.genSalt(10, function(err, salt) {
-    if (err) return next(err);
-    
-    bcrypt.hash(admin.password, salt, function(err, hash) {
-      if (err) return next(err);
-      
-      admin.password = hash;
-      console.log('🔐 Hash created:', admin.password.substring(0, 20) + '...');
-      next();
-    });
-  });
+
+  const salt = await bcrypt.genSalt(10);
+  this.password = await bcrypt.hash(this.password, salt);
+  console.log('🔐 Hash created:', this.password.substring(0, 20) + '...');
 });
 
 // Compare password method

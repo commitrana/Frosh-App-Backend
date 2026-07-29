@@ -104,18 +104,13 @@ studentSchema.methods.generatePassword = function() {
 // same pattern as Society.js / Member.js). This covers every path that
 // sets student.password: admin generate-password, admin bulk import,
 // and the new self-service reset-password route below.
-studentSchema.pre('save', async function (next) {
-  if (!this.isModified('password')) return next();
-  if (!this.password) return next(); // empty default password, nothing to hash
-  if (this.password.startsWith('$2b$')) return next(); // already hashed
+studentSchema.pre('save', async function () {
+  if (!this.isModified('password')) return;
+  if (!this.password) return; // empty default password, nothing to hash
+  if (this.password.startsWith('$2b$')) return; // already hashed
 
-  try {
-    const salt = await bcrypt.genSalt(10);
-    this.password = await bcrypt.hash(this.password, salt);
-    next();
-  } catch (err) {
-    next(err);
-  }
+  const salt = await bcrypt.genSalt(10);
+  this.password = await bcrypt.hash(this.password, salt);
 });
 
 // Compare password — supports both freshly-hashed passwords and any

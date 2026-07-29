@@ -74,19 +74,12 @@ const MemberSchema = new mongoose.Schema({
 });
 
 // Hash password before saving
-MemberSchema.pre('save', function(next) {
-  const member = this;
-  if (!member.isModified('password')) return next();
-  if (member.password && member.password.startsWith('$2b$')) return next();
-  
-  bcrypt.genSalt(10, function(err, salt) {
-    if (err) return next(err);
-    bcrypt.hash(member.password, salt, function(err, hash) {
-      if (err) return next(err);
-      member.password = hash;
-      next();
-    });
-  });
+MemberSchema.pre('save', async function () {
+  if (!this.isModified('password')) return;
+  if (this.password && this.password.startsWith('$2b$')) return;
+
+  const salt = await bcrypt.genSalt(10);
+  this.password = await bcrypt.hash(this.password, salt);
 });
 
 // Compare password
