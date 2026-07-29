@@ -336,6 +336,7 @@ router.post('/students/import', authAdmin, async (req, res) => {
           name: studentData.name?.trim() || '',
           email: studentData.email?.trim() || '',
           password: studentData.password?.trim() || '',
+          plainPassword: studentData.password?.trim() || null,
           branch: studentData.branch?.trim() || '',
           phoneNo: studentData.phoneNo?.trim() || '',
           dob: new Date(studentData.dob),
@@ -385,6 +386,7 @@ router.post('/students/generate-password/:id', authAdmin, async (req, res) => {
     
     const newPassword = generatePasswordFromParents(student);
     student.password = newPassword;
+    student.plainPassword = newPassword;
     student.updatedAt = new Date();
     await student.save();
     
@@ -439,6 +441,7 @@ router.post('/students/generate-all-passwords', authAdmin, async (req, res) => {
         // Generate password only for students without password
         const newPassword = generatePasswordFromParents(student);
         student.password = newPassword;
+        student.plainPassword = newPassword;
         student.updatedAt = new Date();
         await student.save();
         generatedCount++;
@@ -541,7 +544,8 @@ router.post('/student-login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
     
-    if (student.password !== password) {
+    const isPasswordValid = await student.comparePassword(password);
+    if (!isPasswordValid) {
       console.log(`❌ Invalid password for: ${email}`);
       return res.status(401).json({ error: 'Invalid email or password' });
     }
@@ -595,8 +599,10 @@ router.post('/student-login', async (req, res) => {
 // ============ STUDENT: Reset password (forgot password) ============
 // Public route — no auth token needed, since the student is locked out.
 // Verifies the account exists by email, then sets the new password.
-// Student passwords are stored as plain text (see models/Student.js —
-// no bcrypt hook there), so no hashing needed here.
+// Student.password is bcrypt-hashed by the model's pre('save') hook —
+// student.save() below takes care of that. We also copy the plaintext
+// into plainPassword purely so the admin dashboard has something
+// human-readable to display (the hash itself can't be reversed).
 router.post('/reset-password', async (req, res) => {
   try {
     const { email, newPassword, confirmPassword } = req.body;
@@ -619,6 +625,7 @@ router.post('/reset-password', async (req, res) => {
     }
 
     student.password = newPassword;
+    student.plainPassword = newPassword;
     student.updatedAt = new Date();
     await student.save();
 

@@ -33,6 +33,7 @@ router.post('/reset-password', authStudent, async (req, res) => {
     }
 
     student.password = newPassword; // Student's pre('save') hook hashes this with bcrypt
+    student.plainPassword = newPassword; // readable copy for the admin dashboard
     student.updatedAt = new Date();
     await student.save();
 
