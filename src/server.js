@@ -29,7 +29,9 @@ const app = express();
 
 // Middleware
 app.use(cors());
-app.use(express.json());
+// Default express.json() body limit is 100kb — too small for bulk
+// operations like importing ~1000 students from CSV in one request.
+app.use(express.json({ limit: '10mb' }));
 
 // MongoDB Connection
 console.log('🔄 Connecting to MongoDB Atlas...');

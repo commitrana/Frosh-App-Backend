@@ -541,7 +541,8 @@ router.post('/student-login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
     
-    if (student.password !== password) {
+    const isPasswordValid = await student.comparePassword(password);
+    if (!isPasswordValid) {
       console.log(`❌ Invalid password for: ${email}`);
       return res.status(401).json({ error: 'Invalid email or password' });
     }
@@ -595,8 +596,7 @@ router.post('/student-login', async (req, res) => {
 // ============ STUDENT: Reset password (forgot password) ============
 // Public route — no auth token needed, since the student is locked out.
 // Verifies the account exists by email, then sets the new password.
-// Student passwords are stored as plain text (see models/Student.js —
-// no bcrypt hook there), so no hashing needed here.
+// Student.password is stored as plain text — no hashing.
 router.post('/reset-password', async (req, res) => {
   try {
     const { email, newPassword, confirmPassword } = req.body;

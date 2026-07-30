@@ -1,5 +1,4 @@
 const mongoose = require('mongoose');
-const bcrypt = require('bcryptjs');
 
 const studentSchema = new mongoose.Schema({
   name: { 
@@ -17,16 +16,6 @@ const studentSchema = new mongoose.Schema({
   password: { 
     type: String, 
     default: '' 
-  },
-  // Last-known plaintext password, kept ONLY so the admin dashboard can
-  // display/print it for students who need it read out to them (e.g. at
-  // orientation, or a helpdesk reset). Login NEVER reads this field —
-  // comparePassword() always checks the bcrypt hash in `password`. Every
-  // route that sets `password` must also set this to the same plaintext
-  // value, since the hash is one-way and can't be reversed for display.
-  plainPassword: {
-    type: String,
-    default: null
   },
   branch: { 
     type: String, 
@@ -110,22 +99,13 @@ studentSchema.methods.generatePassword = function() {
   return password;
 };
 
-// Hash password before saving (skip if unchanged or already hashed —
-// same pattern as Society.js / Member.js). This covers every path that
-// sets student.password: admin generate-password, admin bulk import,
-// and the new self-service reset-password route below.
-studentSchema.pre('save', async function () {
-  if (!this.isModified('password')) return;
-  if (!this.password) return; // empty default password, nothing to hash
-  if (this.password.startsWith('$2b$')) return; // already hashed
-
-  const salt = await bcrypt.genSalt(10);
-  this.password = await bcrypt.hash(this.password, salt);
-});
-
-// Compare password — supports both freshly-hashed passwords and any
-// legacy plaintext passwords already sitting in the DB from before this
-// hook existed, so existing students aren't locked out.
+// Password is stored and compared as plain text — simple by design for
+// this project. NOTE: a small number of existing accounts were hashed by
+// an earlier version of this backend (bcrypt strings start with "$2b$").
+// Those can't be un-hashed, so this falls back to bcrypt-compare only for
+// that legacy shape; every password set going forward is stored as plain
+// text and compared directly, no hashing involved.
+const bcrypt = require('bcryptjs');
 studentSchema.methods.comparePassword = async function (candidatePassword) {
   if (this.password && this.password.startsWith('$2b$')) {
     return bcrypt.compare(candidatePassword, this.password);
