@@ -332,17 +332,25 @@ router.post('/students/import', authAdmin, async (req, res) => {
 
     for (const studentData of students) {
       try {
+        // The frontend CSV parser lowercases every header (phoneNo -> phoneno,
+        // fatherName -> fathername, etc.), so build a case-insensitive lookup
+        // instead of relying on exact camelCase keys.
+        const normalized = {};
+        Object.keys(studentData).forEach(key => {
+          normalized[key.toLowerCase()] = studentData[key];
+        });
+
         const student = new Student({
-          name: studentData.name?.trim() || '',
-          email: studentData.email?.trim() || '',
-          password: studentData.password?.trim() || '',
-          branch: studentData.branch?.trim() || '',
-          phoneNo: studentData.phoneNo?.trim() || '',
-          dob: new Date(studentData.dob),
-          fatherName: studentData.fatherName?.trim() || '',
-          motherName: studentData.motherName?.trim() || '',
-          rollNo: studentData.rollNo?.trim() || '',
-          slotNumber: parseInt(studentData.slotNumber) || 1
+          name: normalized.name?.trim() || '',
+          email: normalized.email?.trim() || '',
+          password: normalized.password?.trim() || '',
+          branch: normalized.branch?.trim() || '',
+          phoneNo: normalized.phoneno?.trim() || '',
+          dob: new Date(normalized.dob),
+          fatherName: normalized.fathername?.trim() || '',
+          motherName: normalized.mothername?.trim() || '',
+          rollNo: normalized.rollno?.trim() || '',
+          slotNumber: parseInt(normalized.slotnumber) || 1
         });
 
         await student.save();
