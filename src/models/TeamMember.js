@@ -22,7 +22,7 @@ const TeamMemberSchema = new mongoose.Schema({
     default: '',
   },
   imageUrl: {
-    type: String,       // public URL returned by Supabase Storage — used by the WEBSITE
+    type: String,       // public URL returned by Supabase Storage
     required: true,
   },
   imagePath: {
@@ -30,17 +30,6 @@ const TeamMemberSchema = new mongoose.Schema({
                          // file from Supabase later (the public URL alone isn't
                          // enough for that). Not in the original spec, but you'll
                          // want it the moment someone deletes/replaces a photo.
-  },
-  appImageUrl: {
-    type: String,        // public URL returned by Supabase Storage — used by the APP.
-                          // Defaults to the same photo as imageUrl on creation, but can
-                          // be resized/replaced independently from then on.
-    default: '',
-  },
-  appImagePath: {
-    type: String,        // storage path for the app-specific photo, so it can be
-                          // deleted from Supabase when replaced/removed.
-    default: '',
   },
   order: {
     type: Number,        // optional display sequence within a category
