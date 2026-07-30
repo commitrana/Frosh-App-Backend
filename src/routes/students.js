@@ -328,6 +328,7 @@ router.post('/students/import', authAdmin, async (req, res) => {
     }
 
     let imported = 0;
+    let skipped = 0;
     let errors = [];
 
     for (const studentData of students) {
@@ -340,16 +341,33 @@ router.post('/students/import', authAdmin, async (req, res) => {
           normalized[key.toLowerCase()] = studentData[key];
         });
 
+        const email = normalized.email?.trim().toLowerCase() || '';
+        const rollNo = normalized.rollno?.trim() || '';
+
+        // Skip rows that already exist (safe to re-run the same CSV any
+        // number of times — already-imported students are just skipped,
+        // not reported as failures).
+        const existing = await Student.findOne({
+          $or: [
+            ...(email ? [{ email }] : []),
+            ...(rollNo ? [{ rollNo }] : [])
+          ]
+        });
+        if (existing) {
+          skipped++;
+          continue;
+        }
+
         const student = new Student({
           name: normalized.name?.trim() || '',
-          email: normalized.email?.trim() || '',
+          email,
           password: normalized.password?.trim() || '',
           branch: normalized.branch?.trim() || '',
           phoneNo: normalized.phoneno?.trim() || '',
           dob: new Date(normalized.dob),
           fatherName: normalized.fathername?.trim() || '',
           motherName: normalized.mothername?.trim() || '',
-          rollNo: normalized.rollno?.trim() || '',
+          rollNo,
           slotNumber: parseInt(normalized.slotnumber) || 1
         });
 
@@ -357,16 +375,17 @@ router.post('/students/import', authAdmin, async (req, res) => {
         imported++;
       } catch (error) {
         if (error.code === 11000) {
-          errors.push(`Duplicate entry: ${studentData.email || studentData.rollNo}`);
+          skipped++;
         } else {
-          errors.push(`Error: ${error.message}`);
+          errors.push(`Error (${studentData.email || studentData.rollNo || 'unknown row'}): ${error.message}`);
         }
       }
     }
 
     res.json({
-      message: `Imported ${imported} students`,
+      message: `Imported ${imported} students (${skipped} already existed, skipped)`,
       imported,
+      skipped,
       errors: errors.length,
       errorDetails: errors.slice(0, 10)
     });
