@@ -289,18 +289,16 @@ router.get('/profile', async (req, res) => {
   }
 });
 
-// ============ FACULTY: Reset password (forgot password) ============
-// Public route — no auth token needed, mirrors routes/students.js.
+// ============ FACULTY: Change password (knows old password) ============
+// Public route — mirrors routes/students.js. The app sends
+// { email, oldPassword, newPassword }; we verify oldPassword before
+// allowing the change.
 router.post('/reset-password', async (req, res) => {
   try {
-    const { email, newPassword, confirmPassword } = req.body;
+    const { email, oldPassword, newPassword } = req.body;
 
-    if (!email || !newPassword || !confirmPassword) {
-      return res.status(400).json({ error: 'Email, new password and confirm password are required.' });
-    }
-
-    if (newPassword !== confirmPassword) {
-      return res.status(400).json({ error: 'Passwords do not match.' });
+    if (!email || !oldPassword || !newPassword) {
+      return res.status(400).json({ error: 'Email, old password and new password are required.' });
     }
 
     if (newPassword.length < 6) {
@@ -310,6 +308,11 @@ router.post('/reset-password', async (req, res) => {
     const faculty = await Faculty.findOne({ email: email.toLowerCase().trim() });
     if (!faculty) {
       return res.status(404).json({ error: 'No faculty account found with this email.' });
+    }
+
+    const isMatch = await faculty.comparePassword(oldPassword);
+    if (!isMatch) {
+      return res.status(401).json({ error: 'Old password is incorrect.' });
     }
 
     // Assigning plain text here is safe — the pre-save hook in

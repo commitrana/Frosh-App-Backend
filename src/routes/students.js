@@ -148,12 +148,8 @@ const generatePasswordFromParents = (student) => {
   const year = dob.getFullYear();
   const dobString = `${day}${month}${year}`;
   
-  // Special characters
-  const specialChars = ['!', '@', '#', '$', '%', '&', '*'];
-  const randomSpecial = specialChars[Math.floor(Math.random() * specialChars.length)];
-  
   // Combine to create password
-  let password = fatherInitials + motherInitials + dobString + randomSpecial;
+  let password = fatherInitials + motherInitials + dobString;
   
   // If initials are empty, use fallback
   if (!fatherInitials || !motherInitials) {
@@ -162,7 +158,7 @@ const generatePasswordFromParents = (student) => {
     for (let i = 0; i < 6; i++) {
       random += chars.charAt(Math.floor(Math.random() * chars.length));
     }
-    password = `STU${dobString}${random}${randomSpecial}`;
+    password = `STU${dobString}${random}`;
   }
   
   // Ensure password is at least 10 characters
@@ -650,20 +646,17 @@ router.post('/student-login', async (req, res) => {
   }
 });
 
-// ============ STUDENT: Reset password (forgot password) ============
-// Public route — no auth token needed, since the student is locked out.
-// Verifies the account exists by email, then sets the new password.
+// ============ STUDENT: Change password (knows old password) ============
+// Public route (student isn't logged in yet on this screen) — the app
+// sends { email, oldPassword, newPassword }. We verify oldPassword against
+// the stored password before allowing the change.
 // Student.password is stored as plain text — no hashing.
 router.post('/reset-password', async (req, res) => {
   try {
-    const { email, newPassword, confirmPassword } = req.body;
+    const { email, oldPassword, newPassword } = req.body;
 
-    if (!email || !newPassword || !confirmPassword) {
-      return res.status(400).json({ error: 'Email, new password and confirm password are required.' });
-    }
-
-    if (newPassword !== confirmPassword) {
-      return res.status(400).json({ error: 'Passwords do not match.' });
+    if (!email || !oldPassword || !newPassword) {
+      return res.status(400).json({ error: 'Email, old password and new password are required.' });
     }
 
     if (newPassword.length < 6) {
@@ -673,6 +666,11 @@ router.post('/reset-password', async (req, res) => {
     const student = await Student.findOne({ email: email.toLowerCase().trim() });
     if (!student) {
       return res.status(404).json({ error: 'No student account found with this email.' });
+    }
+
+    const isMatch = await student.comparePassword(oldPassword);
+    if (!isMatch) {
+      return res.status(401).json({ error: 'Old password is incorrect.' });
     }
 
     student.password = newPassword;
