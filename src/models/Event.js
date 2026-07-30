@@ -54,7 +54,14 @@ const eventSchema = new mongoose.Schema({
     type: Date,
     default: Date.now
   },
-  imageUrl: {           // ✅ ADD THIS
+  imageUrl: {           // Public Supabase Storage URL for the event cover photo
+    type: String,
+    default: null
+  },
+  // Storage path (not the URL) within the Supabase bucket — kept so the old
+  // file can be deleted whenever the event's photo is replaced or the event
+  // itself is deleted, same pattern as TeamMember.imagePath.
+  imagePath: {
     type: String,
     default: null
   },

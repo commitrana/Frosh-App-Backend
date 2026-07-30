@@ -1,8 +1,24 @@
 const express = require('express');
 const router = express.Router();
+const multer = require('multer');
 const Event = require('../models/Event');
 const { authAdmin } = require('../middleware/auth');
-const upload = require('../middleware/upload');
+const { uploadToImageHost, deleteFromImageHost } = require('../utils/supabaseUpload');
+
+// In-memory storage — file never touches local disk, it goes straight to
+// Supabase from the buffer. This replaces the old middleware/upload.js disk
+// storage, which wrote to src/uploads/events/ and lost every image on
+// every redeploy/restart (that's the "cache" behaviour you were seeing).
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB raw upload cap, pre-compression
+  fileFilter: (req, file, cb) => {
+    if (!file.mimetype.startsWith('image/')) {
+      return cb(new Error('Only image files are allowed'));
+    }
+    cb(null, true);
+  },
+});
 
 // ============ PUBLIC: Get events (used by the mobile app) ============
 // Supports optional ?status=live|upcoming|past filter
@@ -220,24 +236,36 @@ router.put('/admin/:id/slot/:number', authAdmin, async (req, res) => {
 
 // routes/events.js
 // ============ ADMIN: Upload/replace event cover photo ============
+// Uploads straight to Supabase Storage (same bucket as team photos, kept in
+// its own 'events' folder) and returns the public URL — no local disk
+// involved, so the image survives redeploys/restarts.
 router.post('/admin/:id/upload-image', authAdmin, upload.single('image'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No image file provided' });
     }
 
-    // relative URL — server ise static serve karega
-    const imageUrl = `/uploads/events/${req.file.filename}`;
-
-    const event = await Event.findByIdAndUpdate(
-      req.params.id,
-      { imageUrl, updatedAt: new Date() },
-      { new: true }
-    );
-
+    const event = await Event.findById(req.params.id);
     if (!event) return res.status(404).json({ error: 'Event not found' });
 
-    res.json({ message: 'Cover photo uploaded successfully!', imageUrl, event });
+    // Upload the new photo first — if this fails, the event keeps its
+    // existing photo instead of ending up with none.
+    const { url, path } = await uploadToImageHost(req.file.buffer, 'events');
+    const oldImagePath = event.imagePath;
+
+    event.imageUrl = url;
+    event.imagePath = path;
+    event.updatedAt = new Date();
+    await event.save();
+
+    if (oldImagePath) {
+      await deleteFromImageHost(oldImagePath).catch((err) =>
+        console.error('⚠️ Failed to delete old event photo:', err)
+      );
+    }
+
+    console.log('✅ Event cover photo uploaded:', event.name);
+    res.json({ message: 'Cover photo uploaded successfully!', imageUrl: url, event });
   } catch (error) {
     console.error('❌ Upload image error:', error);
     res.status(500).json({ error: 'Server error: ' + error.message });
@@ -249,6 +277,12 @@ router.delete('/admin/:id', authAdmin, async (req, res) => {
     const event = await Event.findByIdAndDelete(req.params.id);
     if (!event) {
       return res.status(404).json({ error: 'Event not found' });
+    }
+
+    if (event.imagePath) {
+      await deleteFromImageHost(event.imagePath).catch((err) =>
+        console.error('⚠️ Failed to delete event photo:', err)
+      );
     }
 
     console.log('✅ Event deleted:', event.name);
