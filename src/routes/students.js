@@ -148,12 +148,8 @@ const generatePasswordFromParents = (student) => {
   const year = dob.getFullYear();
   const dobString = `${day}${month}${year}`;
   
-  // Special characters
-  const specialChars = ['!', '@', '#', '$', '%', '&', '*'];
-  const randomSpecial = specialChars[Math.floor(Math.random() * specialChars.length)];
-  
   // Combine to create password
-  let password = fatherInitials + motherInitials + dobString + randomSpecial;
+  let password = fatherInitials + motherInitials + dobString;
   
   // If initials are empty, use fallback
   if (!fatherInitials || !motherInitials) {
@@ -162,7 +158,7 @@ const generatePasswordFromParents = (student) => {
     for (let i = 0; i < 6; i++) {
       random += chars.charAt(Math.floor(Math.random() * chars.length));
     }
-    password = `STU${dobString}${random}${randomSpecial}`;
+    password = `STU${dobString}${random}`;
   }
   
   // Ensure password is at least 10 characters
