@@ -6,6 +6,25 @@ const BootcampStudent = require('../models/BootcampStudent');
 const { authAdmin, authStudent } = require('../middleware/auth');
 const { uploadToImageHost, deleteFromImageHost } = require('../utils/supabaseUpload');
 
+// The CSV import/export format uses DD-MM-YYYY (e.g. "28-09-2003"), which
+// JavaScript's native `new Date(string)` does NOT parse correctly:
+//   - day > 12  -> "Invalid Date" (fails validation, row rejected)
+//   - day <= 12 -> silently misread as MM-DD-YYYY, swapping day and month
+//                  (e.g. "07-05-2007" becomes 5 July instead of 7 May) with
+//                  NO error at all — a wrong birthdate saved as if correct.
+// This parses that exact format explicitly so both cases are handled right.
+function parseDDMMYYYY(value) {
+  if (!value) return null;
+  const trimmed = String(value).trim();
+  const match = trimmed.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
+  if (!match) return null;
+  const [, day, month, year] = match;
+  const date = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
+  // Guard against e.g. "31-02-2003" (Feb 31st) rolling over into March
+  if (date.getUTCMonth() !== Number(month) - 1) return null;
+  return date;
+}
+
 // Same multer setup already used for team photo uploads (routes/team.js) —
 // memory storage so we can hand the raw buffer straight to Supabase, with a
 // generous raw-upload cap since the app compresses/resizes the image on the
@@ -299,7 +318,13 @@ router.get('/students/export', authAdmin, async (req, res) => {
       const row = headers.map(header => {
         let value = student[header] || '';
         if (header === 'dob') {
-          value = new Date(value).toISOString().split('T')[0];
+          // Match the DD-MM-YYYY format the import route expects, so this
+          // file can be re-imported later without hitting the same parsing bug.
+          const d = new Date(value);
+          const dd = String(d.getUTCDate()).padStart(2, '0');
+          const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+          const yyyy = d.getUTCFullYear();
+          value = `${dd}-${mm}-${yyyy}`;
         }
         if (typeof value === 'string' && (value.includes(',') || value.includes('"'))) {
           value = `"${value.replace(/"/g, '""')}"`;
@@ -358,13 +383,18 @@ router.post('/students/import', authAdmin, async (req, res) => {
           continue;
         }
 
+        const parsedDob = parseDDMMYYYY(normalized.dob);
+        if (!parsedDob) {
+          throw new Error(`Invalid dob "${normalized.dob}" — expected DD-MM-YYYY`);
+        }
+
         const student = new Student({
           name: normalized.name?.trim() || '',
           email,
           password: normalized.password?.trim() || '',
           branch: normalized.branch?.trim() || '',
           phoneNo: normalized.phoneno?.trim() || '',
-          dob: new Date(normalized.dob),
+          dob: parsedDob,
           fatherName: normalized.fathername?.trim() || '',
           motherName: normalized.mothername?.trim() || '',
           rollNo,
