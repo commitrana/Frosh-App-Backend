@@ -92,6 +92,8 @@ app.use('/api/feedback', feedbackRoutes); // Admin: fixed questions/session list
 const teamRoutes = require('./routes/team');
 app.use('/api/team', teamRoutes);
 app.use('/api/admin/team', teamRoutes);
+const magazineRoutes = require('./routes/Magazineroutes');
+app.use('/api', magazineRoutes); // exposes /api/admin/magazines/* and /api/magazines/*
 // Protected test routes
 app.get('/api/society-profile', authSociety, (req, res) => {
   res.json({

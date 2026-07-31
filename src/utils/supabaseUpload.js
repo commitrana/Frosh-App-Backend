@@ -66,4 +66,4 @@ async function deleteFromImageHost(path) {
 
 // Swapping providers later (e.g. to Google Drive) means editing only this
 // file — routes/team.js only ever calls uploadToImageHost / deleteFromImageHost.
-module.exports = { uploadToImageHost, deleteFromImageHost };
+module.exports = { uploadToImageHost, deleteFromImageHost, supabase };
