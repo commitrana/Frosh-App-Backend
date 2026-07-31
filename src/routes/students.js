@@ -6,6 +6,25 @@ const BootcampStudent = require('../models/BootcampStudent');
 const { authAdmin, authStudent } = require('../middleware/auth');
 const { uploadToImageHost, deleteFromImageHost } = require('../utils/supabaseUpload');
 
+// The CSV import/export format uses DD-MM-YYYY (e.g. "28-09-2003"), which
+// JavaScript's native `new Date(string)` does NOT parse correctly:
+//   - day > 12  -> "Invalid Date" (fails validation, row rejected)
+//   - day <= 12 -> silently misread as MM-DD-YYYY, swapping day and month
+//                  (e.g. "07-05-2007" becomes 5 July instead of 7 May) with
+//                  NO error at all — a wrong birthdate saved as if correct.
+// This parses that exact format explicitly so both cases are handled right.
+function parseDDMMYYYY(value) {
+  if (!value) return null;
+  const trimmed = String(value).trim();
+  const match = trimmed.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
+  if (!match) return null;
+  const [, day, month, year] = match;
+  const date = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
+  // Guard against e.g. "31-02-2003" (Feb 31st) rolling over into March
+  if (date.getUTCMonth() !== Number(month) - 1) return null;
+  return date;
+}
+
 // Same multer setup already used for team photo uploads (routes/team.js) —
 // memory storage so we can hand the raw buffer straight to Supabase, with a
 // generous raw-upload cap since the app compresses/resizes the image on the
@@ -129,12 +148,8 @@ const generatePasswordFromParents = (student) => {
   const year = dob.getFullYear();
   const dobString = `${day}${month}${year}`;
   
-  // Special characters
-  const specialChars = ['!', '@', '#', '$', '%', '&', '*'];
-  const randomSpecial = specialChars[Math.floor(Math.random() * specialChars.length)];
-  
   // Combine to create password
-  let password = fatherInitials + motherInitials + dobString + randomSpecial;
+  let password = fatherInitials + motherInitials + dobString;
   
   // If initials are empty, use fallback
   if (!fatherInitials || !motherInitials) {
@@ -143,7 +158,7 @@ const generatePasswordFromParents = (student) => {
     for (let i = 0; i < 6; i++) {
       random += chars.charAt(Math.floor(Math.random() * chars.length));
     }
-    password = `STU${dobString}${random}${randomSpecial}`;
+    password = `STU${dobString}${random}`;
   }
   
   // Ensure password is at least 10 characters
@@ -299,7 +314,13 @@ router.get('/students/export', authAdmin, async (req, res) => {
       const row = headers.map(header => {
         let value = student[header] || '';
         if (header === 'dob') {
-          value = new Date(value).toISOString().split('T')[0];
+          // Match the DD-MM-YYYY format the import route expects, so this
+          // file can be re-imported later without hitting the same parsing bug.
+          const d = new Date(value);
+          const dd = String(d.getUTCDate()).padStart(2, '0');
+          const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+          const yyyy = d.getUTCFullYear();
+          value = `${dd}-${mm}-${yyyy}`;
         }
         if (typeof value === 'string' && (value.includes(',') || value.includes('"'))) {
           value = `"${value.replace(/"/g, '""')}"`;
@@ -328,37 +349,69 @@ router.post('/students/import', authAdmin, async (req, res) => {
     }
 
     let imported = 0;
+    let skipped = 0;
     let errors = [];
 
     for (const studentData of students) {
       try {
+        // The frontend CSV parser lowercases every header (phoneNo -> phoneno,
+        // fatherName -> fathername, etc.), so build a case-insensitive lookup
+        // instead of relying on exact camelCase keys.
+        const normalized = {};
+        Object.keys(studentData).forEach(key => {
+          normalized[key.toLowerCase()] = studentData[key];
+        });
+
+        const email = normalized.email?.trim().toLowerCase() || '';
+        const rollNo = normalized.rollno?.trim() || '';
+
+        // Skip rows that already exist (safe to re-run the same CSV any
+        // number of times — already-imported students are just skipped,
+        // not reported as failures).
+        const existing = await Student.findOne({
+          $or: [
+            ...(email ? [{ email }] : []),
+            ...(rollNo ? [{ rollNo }] : [])
+          ]
+        });
+        if (existing) {
+          skipped++;
+          continue;
+        }
+
+        const parsedDob = parseDDMMYYYY(normalized.dob);
+        if (!parsedDob) {
+          throw new Error(`Invalid dob "${normalized.dob}" — expected DD-MM-YYYY`);
+        }
+
         const student = new Student({
-          name: studentData.name?.trim() || '',
-          email: studentData.email?.trim() || '',
-          password: studentData.password?.trim() || '',
-          branch: studentData.branch?.trim() || '',
-          phoneNo: studentData.phoneNo?.trim() || '',
-          dob: new Date(studentData.dob),
-          fatherName: studentData.fatherName?.trim() || '',
-          motherName: studentData.motherName?.trim() || '',
-          rollNo: studentData.rollNo?.trim() || '',
-          slotNumber: parseInt(studentData.slotNumber) || 1
+          name: normalized.name?.trim() || '',
+          email,
+          password: normalized.password?.trim() || '',
+          branch: normalized.branch?.trim() || '',
+          phoneNo: normalized.phoneno?.trim() || '',
+          dob: parsedDob,
+          fatherName: normalized.fathername?.trim() || '',
+          motherName: normalized.mothername?.trim() || '',
+          rollNo,
+          slotNumber: parseInt(normalized.slotnumber) || 1
         });
 
         await student.save();
         imported++;
       } catch (error) {
         if (error.code === 11000) {
-          errors.push(`Duplicate entry: ${studentData.email || studentData.rollNo}`);
+          skipped++;
         } else {
-          errors.push(`Error: ${error.message}`);
+          errors.push(`Error (${studentData.email || studentData.rollNo || 'unknown row'}): ${error.message}`);
         }
       }
     }
 
     res.json({
-      message: `Imported ${imported} students`,
+      message: `Imported ${imported} students (${skipped} already existed, skipped)`,
       imported,
+      skipped,
       errors: errors.length,
       errorDetails: errors.slice(0, 10)
     });
@@ -593,20 +646,17 @@ router.post('/student-login', async (req, res) => {
   }
 });
 
-// ============ STUDENT: Reset password (forgot password) ============
-// Public route — no auth token needed, since the student is locked out.
-// Verifies the account exists by email, then sets the new password.
+// ============ STUDENT: Change password (knows old password) ============
+// Public route (student isn't logged in yet on this screen) — the app
+// sends { email, oldPassword, newPassword }. We verify oldPassword against
+// the stored password before allowing the change.
 // Student.password is stored as plain text — no hashing.
 router.post('/reset-password', async (req, res) => {
   try {
-    const { email, newPassword, confirmPassword } = req.body;
+    const { email, oldPassword, newPassword } = req.body;
 
-    if (!email || !newPassword || !confirmPassword) {
-      return res.status(400).json({ error: 'Email, new password and confirm password are required.' });
-    }
-
-    if (newPassword !== confirmPassword) {
-      return res.status(400).json({ error: 'Passwords do not match.' });
+    if (!email || !oldPassword || !newPassword) {
+      return res.status(400).json({ error: 'Email, old password and new password are required.' });
     }
 
     if (newPassword.length < 6) {
@@ -616,6 +666,11 @@ router.post('/reset-password', async (req, res) => {
     const student = await Student.findOne({ email: email.toLowerCase().trim() });
     if (!student) {
       return res.status(404).json({ error: 'No student account found with this email.' });
+    }
+
+    const isMatch = await student.comparePassword(oldPassword);
+    if (!isMatch) {
+      return res.status(401).json({ error: 'Old password is incorrect.' });
     }
 
     student.password = newPassword;
