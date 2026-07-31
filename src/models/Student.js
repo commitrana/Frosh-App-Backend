@@ -17,9 +17,12 @@ const studentSchema = new mongoose.Schema({
     type: String, 
     default: '' 
   },
+  // branch is no longer supplied by the current sheet (NAME/FNAME/APPNO/
+  // EMAIL/MOBILE). No longer required — stays '' if not provided, never
+  // throws a validation error.
   branch: { 
     type: String, 
-    required: true,
+    default: '',
     trim: true 
   },
   phoneNo: { 
@@ -27,18 +30,21 @@ const studentSchema = new mongoose.Schema({
     required: true,
     trim: true 
   },
+  // dob is no longer supplied either. No longer required. default: null
+  // means "unknown", not "invalid" — reads back as null/blank everywhere.
   dob: { 
     type: Date, 
-    required: true 
+    default: null 
   },
   fatherName: { 
     type: String, 
     required: true,
     trim: true 
   },
+  // motherName no longer supplied. No longer required — blank is fine.
   motherName: { 
     type: String, 
-    required: true,
+    default: '',
     trim: true 
   },
   rollNo: { 
@@ -47,10 +53,12 @@ const studentSchema = new mongoose.Schema({
     unique: true,
     trim: true 
   },
+  // slotNumber no longer supplied. No longer required. Also removed the
+  // enum: [1, 2] restriction, since a missing value (undefined/null) would
+  // otherwise fail that enum check.
   slotNumber: { 
     type: Number, 
-    required: true, 
-    enum: [1, 2] 
+    default: null 
   },
   // Bootcamp batch assignment, e.g. "RedA", "BlueB". null = not yet assigned.
   batch: {

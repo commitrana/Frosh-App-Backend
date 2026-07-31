@@ -125,49 +125,35 @@ router.post('/students/me/photo', authStudent, photoUpload.single('photo'), asyn
   }
 });
 
-// ============ HELPER FUNCTION: Generate Password from Parents ============
-const generatePasswordFromParents = (student) => {
-  // Get father's initials
-  const fatherName = student.fatherName || '';
-  const fatherInitials = fatherName
-    .split(' ')
-    .map(word => word.charAt(0).toUpperCase())
-    .join('');
-  
-  // Get mother's initials
-  const motherName = student.motherName || '';
-  const motherInitials = motherName
-    .split(' ')
-    .map(word => word.charAt(0).toUpperCase())
-    .join('');
-  
-  // Get DOB in DDMMYYYY format
-  const dob = student.dob || new Date();
-  const day = String(dob.getDate()).padStart(2, '0');
-  const month = String(dob.getMonth() + 1).padStart(2, '0');
-  const year = dob.getFullYear();
-  const dobString = `${day}${month}${year}`;
-  
-  // Combine to create password
-  let password = fatherInitials + motherInitials + dobString;
-  
-  // If initials are empty, use fallback
-  if (!fatherInitials || !motherInitials) {
+// ============ HELPER FUNCTION: Generate Password from Father's Name + Mobile ============
+// New rule: father's FIRST NAME (first word of fatherName, as typed) +
+// first 4 digits of the mobile number.
+// e.g. fatherName = "Ramesh Kumar", phoneNo = "9876543210"
+//      -> password = "Ramesh9876"
+const generatePasswordFromFatherAndMobile = (student) => {
+  // First word of father's name, trimmed of extra spaces. Keep original
+  // casing as typed (don't force-case it) so admins recognise it as-is.
+  const fatherName = (student.fatherName || '').trim();
+  const fatherFirstName = fatherName.split(/\s+/)[0] || '';
+
+  // Strip anything that isn't a digit (handles "+91 98765-43210", spaces,
+  // dashes, etc.) then take the first 4 digits.
+  const phoneDigits = (student.phoneNo || '').replace(/\D/g, '');
+  const first4Digits = phoneDigits.slice(0, 4);
+
+  // Fallback: if either piece is missing, we can't build the intended
+  // password, so generate a random one instead of silently producing a
+  // weak/incomplete password like "9876" or "Ramesh".
+  if (!fatherFirstName || first4Digits.length < 4) {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
     let random = '';
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < 10; i++) {
       random += chars.charAt(Math.floor(Math.random() * chars.length));
     }
-    password = `STU${dobString}${random}`;
+    return `STU${random}`;
   }
-  
-  // Ensure password is at least 10 characters
-  while (password.length < 10) {
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-    password += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  
-  return password;
+
+  return `${fatherFirstName}${first4Digits}`;
 };
 
 // ============ GET ALL STUDENTS (with pagination) ============
@@ -354,18 +340,39 @@ router.post('/students/import', authAdmin, async (req, res) => {
 
     for (const studentData of students) {
       try {
-        // The frontend CSV parser lowercases every header (phoneNo -> phoneno,
-        // fatherName -> fathername, etc.), so build a case-insensitive lookup
-        // instead of relying on exact camelCase keys.
+        // The frontend CSV parser lowercases every header, so build a
+        // case-insensitive lookup instead of relying on exact keys.
         const normalized = {};
         Object.keys(studentData).forEach(key => {
           normalized[key.toLowerCase()] = studentData[key];
         });
 
-        const email = normalized.email?.trim().toLowerCase() || '';
-        const rollNo = normalized.rollno?.trim() || '';
+        // Current sheet uses NAME / FNAME / APPNO / EMAIL / MOBILE.
+        // Still accept the old header names too (rollno/fathername/phoneno)
+        // so old-format CSVs keep working. First non-empty match wins.
+        const pick = (...keys) => {
+          for (const k of keys) {
+            if (normalized[k] !== undefined && normalized[k] !== null && String(normalized[k]).trim() !== '') {
+              return String(normalized[k]).trim();
+            }
+          }
+          return '';
+        };
 
-        // Skip rows that already exist (safe to re-run the same CSV any
+        const name = pick('name');
+        const email = pick('email').toLowerCase();
+        const rollNo = pick('appno', 'rollno');
+        const phoneNo = pick('mobile', 'phoneno');
+        const fatherName = pick('fname', 'fathername');
+
+        // Optional fields — no longer part of the sheet. Left blank
+        // instead of erroring when absent.
+        const branch = pick('branch');
+        const motherName = pick('mothername');
+        const rawSlotNumber = pick('slotnumber');
+        const rawDob = pick('dob');
+
+        // Skip rows that already exist (safe to re-run the same sheet any
         // number of times — already-imported students are just skipped,
         // not reported as failures).
         const existing = await Student.findOne({
@@ -379,22 +386,26 @@ router.post('/students/import', authAdmin, async (req, res) => {
           continue;
         }
 
-        const parsedDob = parseDDMMYYYY(normalized.dob);
-        if (!parsedDob) {
-          throw new Error(`Invalid dob "${normalized.dob}" — expected DD-MM-YYYY`);
+        // Required fields for a row to be importable at all.
+        if (!name || !email || !rollNo || !phoneNo || !fatherName) {
+          throw new Error('Missing required field (need NAME, EMAIL, APPNO, MOBILE, FNAME)');
         }
 
+        // dob is optional now — only parse it if present; an invalid/blank
+        // value is just left as null instead of rejecting the whole row.
+        const parsedDob = rawDob ? parseDDMMYYYY(rawDob) : null;
+
         const student = new Student({
-          name: normalized.name?.trim() || '',
+          name,
           email,
           password: normalized.password?.trim() || '',
-          branch: normalized.branch?.trim() || '',
-          phoneNo: normalized.phoneno?.trim() || '',
+          branch,
+          phoneNo,
           dob: parsedDob,
-          fatherName: normalized.fathername?.trim() || '',
-          motherName: normalized.mothername?.trim() || '',
+          fatherName,
+          motherName,
           rollNo,
-          slotNumber: parseInt(normalized.slotnumber) || 1
+          slotNumber: rawSlotNumber ? (parseInt(rawSlotNumber) || null) : null
         });
 
         await student.save();
@@ -403,7 +414,7 @@ router.post('/students/import', authAdmin, async (req, res) => {
         if (error.code === 11000) {
           skipped++;
         } else {
-          errors.push(`Error (${studentData.email || studentData.rollNo || 'unknown row'}): ${error.message}`);
+          errors.push(`Error (${studentData.email || studentData.rollNo || studentData.APPNO || 'unknown row'}): ${error.message}`);
         }
       }
     }
@@ -436,7 +447,7 @@ router.post('/students/generate-password/:id', authAdmin, async (req, res) => {
     
     console.log(`✅ Student found: ${student.name} (${student.email})`);
     
-    const newPassword = generatePasswordFromParents(student);
+    const newPassword = generatePasswordFromFatherAndMobile(student);
     student.password = newPassword;
     student.updatedAt = new Date();
     await student.save();
@@ -453,8 +464,7 @@ router.post('/students/generate-password/:id', authAdmin, async (req, res) => {
         name: student.name,
         email: student.email,
         fatherName: student.fatherName,
-        motherName: student.motherName,
-        dob: student.dob
+        phoneNo: student.phoneNo
       }
     });
   } catch (error) {
@@ -490,7 +500,7 @@ router.post('/students/generate-all-passwords', authAdmin, async (req, res) => {
         }
         
         // Generate password only for students without password
-        const newPassword = generatePasswordFromParents(student);
+        const newPassword = generatePasswordFromFatherAndMobile(student);
         student.password = newPassword;
         student.updatedAt = new Date();
         await student.save();
@@ -528,10 +538,13 @@ router.post('/students/create', authAdmin, async (req, res) => {
   try {
     const { name, email, branch, phoneNo, dob, fatherName, motherName, rollNo, slotNumber } = req.body;
     
-    // Validate required fields
-    if (!name || !email || !branch || !phoneNo || !dob || !fatherName || !motherName || !rollNo) {
+    // Validate required fields — matches the current sheet columns
+    // (NAME, FNAME, APPNO, EMAIL, MOBILE). branch, dob, motherName and
+    // slotNumber are no longer part of the source data, so they're
+    // optional now and simply left blank if not sent.
+    if (!name || !email || !phoneNo || !fatherName || !rollNo) {
       return res.status(400).json({ 
-        error: 'All fields are required: name, email, branch, phoneNo, dob, fatherName, motherName, rollNo' 
+        error: 'Required fields: name, email, phoneNo, fatherName, rollNo' 
       });
     }
     
@@ -546,17 +559,18 @@ router.post('/students/create', authAdmin, async (req, res) => {
       });
     }
     
-    // Create new student
+    // Create new student — optional fields fall back to blank instead of
+    // throwing, so a missing branch/dob/motherName/slotNumber never errors.
     const student = new Student({
       name: name.trim(),
       email: email.trim().toLowerCase(),
-      branch: branch.trim(),
+      branch: branch ? branch.trim() : '',
       phoneNo: phoneNo.trim(),
-      dob: new Date(dob),
+      dob: dob ? new Date(dob) : null,
       fatherName: fatherName.trim(),
-      motherName: motherName.trim(),
+      motherName: motherName ? motherName.trim() : '',
       rollNo: rollNo.trim(),
-      slotNumber: parseInt(slotNumber) || 1,
+      slotNumber: slotNumber ? parseInt(slotNumber) : null,
       password: '' // Empty initially, admin can generate later
     });
     
