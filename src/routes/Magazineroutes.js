@@ -22,6 +22,28 @@ const upload = multer({
   },
 });
 
+// Wraps upload.single('pdf') so Multer errors (file too large, wrong type,
+// a broken/truncated multipart body, etc.) get turned into a clean JSON
+// response instead of propagating as a raw error mid-request. Previously,
+// a MulterError (e.g. "File too large") would blow up before the route's
+// own try/catch ever ran, and the request would end without a proper
+// response — which is what showed up in the browser as a CORS error, even
+// though the real cause was just an oversized PDF.
+function uploadPdf(req, res, next) {
+  upload.single('pdf')(req, res, (err) => {
+    if (err instanceof multer.MulterError) {
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(400).json({ error: 'PDF is too large — max size is 60MB. Try compressing it first.' });
+      }
+      return res.status(400).json({ error: err.message });
+    }
+    if (err) {
+      return res.status(400).json({ error: err.message || 'Upload failed' });
+    }
+    next();
+  });
+}
+
 async function deleteIssuePages(issueNumber) {
   const prefix = `issue-${issueNumber}`;
   const { data: files, error: listError } = await supabase.storage
@@ -66,7 +88,7 @@ router.get('/admin/magazines', authAdmin, async (req, res) => {
 router.post(
   '/admin/magazines/:issueNumber/upload',
   authAdmin,
-  upload.single('pdf'),
+  uploadPdf,
   async (req, res) => {
     const issueNumber = Number(req.params.issueNumber);
     if (!Number.isInteger(issueNumber) || issueNumber < 1) {
@@ -76,15 +98,25 @@ router.post(
       return res.status(400).json({ error: 'PDF file is required' });
     }
 
-    let magazine = await Magazine.findOne({ issueNumber });
-    if (!magazine) {
-      magazine = new Magazine({ issueNumber, title: req.body.title || `Issue ${issueNumber}` });
-    }
-    magazine.status = 'processing';
-    magazine.error = '';
-    await magazine.save();
-
+    // Everything below is now inside one try/catch — previously the
+    // find/save above this comment sat OUTSIDE any try/catch, so any
+    // failure there (a Mongo hiccup, a validation error, etc.) became an
+    // unhandled promise rejection. Since Node 15+, an unhandled rejection
+    // crashes the whole process by default — not just this one request.
+    // That's what was producing the "responded with 500" + "blocked by
+    // CORS" + "net::ERR_FAILED" combo in the browser: the server process
+    // was dying mid-request, so the response (and its CORS header) never
+    // actually got sent — the browser was just seeing a dropped connection.
+    let magazine;
     try {
+      magazine = await Magazine.findOne({ issueNumber });
+      if (!magazine) {
+        magazine = new Magazine({ issueNumber, title: req.body.title || `Issue ${issueNumber}` });
+      }
+      magazine.status = 'processing';
+      magazine.error = '';
+      await magazine.save();
+
       // Clear any previously-converted pages for this issue first, so
       // replacing a PDF doesn't leave old orphaned pages behind in storage.
       await deleteIssuePages(issueNumber);
@@ -102,9 +134,14 @@ router.post(
       res.json({ success: true, magazine });
     } catch (err) {
       console.error('Magazine conversion failed:', err);
-      magazine.status = 'failed';
-      magazine.error = err.message || 'Conversion failed';
-      await magazine.save();
+      if (magazine) {
+        magazine.status = 'failed';
+        magazine.error = err.message || 'Conversion failed';
+        // Don't let a save failure here throw again inside the catch block.
+        await magazine.save().catch((saveErr) =>
+          console.error('Also failed to persist failed status:', saveErr)
+        );
+      }
       res.status(500).json({ error: 'Failed to convert PDF', details: err.message });
     }
   }
