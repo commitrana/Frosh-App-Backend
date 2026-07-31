@@ -224,6 +224,30 @@ router.get('/students/all', authAdmin, async (req, res) => {
   }
 });
 
+// ============ BULK UPDATE STUDENTS ============
+// NOTE: this must be defined BEFORE the /students/:id route below, same
+// reason as the bulk-delete route — otherwise PUT /students/bulk matches
+// /:id with id="bulk" and this handler never runs.
+router.put('/students/bulk', authAdmin, async (req, res) => {
+  try {
+    const { studentIds, ...updates } = req.body;
+    updates.updatedAt = new Date();
+
+    const result = await Student.updateMany(
+      { _id: { $in: studentIds } },
+      updates
+    );
+
+    res.json({ 
+      message: `Updated ${result.modifiedCount} students`,
+      modifiedCount: result.modifiedCount 
+    });
+  } catch (error) {
+    console.error('Error bulk updating students:', error);
+    res.status(500).json({ error: 'Failed to update students' });
+  }
+});
+
 // ============ UPDATE STUDENT ============
 router.put('/students/:id', authAdmin, async (req, res) => {
   try {
@@ -248,24 +272,23 @@ router.put('/students/:id', authAdmin, async (req, res) => {
   }
 });
 
-// ============ BULK UPDATE STUDENTS ============
-router.put('/students/bulk', authAdmin, async (req, res) => {
+// ============ BULK DELETE STUDENTS ============
+// NOTE: this must be defined BEFORE the /students/:id route below.
+// Express matches routes in the order they're registered — if /:id came
+// first, a request to DELETE /students/bulk would incorrectly match
+// /:id with id="bulk", never reaching this handler at all.
+router.delete('/students/bulk', authAdmin, async (req, res) => {
   try {
-    const { studentIds, ...updates } = req.body;
-    updates.updatedAt = new Date();
-
-    const result = await Student.updateMany(
-      { _id: { $in: studentIds } },
-      updates
-    );
+    const { studentIds } = req.body;
+    const result = await Student.deleteMany({ _id: { $in: studentIds } });
 
     res.json({ 
-      message: `Updated ${result.modifiedCount} students`,
-      modifiedCount: result.modifiedCount 
+      message: `Deleted ${result.deletedCount} students`,
+      deletedCount: result.deletedCount 
     });
   } catch (error) {
-    console.error('Error bulk updating students:', error);
-    res.status(500).json({ error: 'Failed to update students' });
+    console.error('Error bulk deleting students:', error);
+    res.status(500).json({ error: 'Failed to delete students' });
   }
 });
 
@@ -283,22 +306,6 @@ router.delete('/students/:id', authAdmin, async (req, res) => {
   } catch (error) {
     console.error('Error deleting student:', error);
     res.status(500).json({ error: 'Failed to delete student' });
-  }
-});
-
-// ============ BULK DELETE STUDENTS ============
-router.delete('/students/bulk', authAdmin, async (req, res) => {
-  try {
-    const { studentIds } = req.body;
-    const result = await Student.deleteMany({ _id: { $in: studentIds } });
-
-    res.json({ 
-      message: `Deleted ${result.deletedCount} students`,
-      deletedCount: result.deletedCount 
-    });
-  } catch (error) {
-    console.error('Error bulk deleting students:', error);
-    res.status(500).json({ error: 'Failed to delete students' });
   }
 });
 
