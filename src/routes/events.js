@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const multer = require('multer');
 const Event = require('../models/Event');
-const { authAdmin } = require('../middleware/auth');
+const { authAdmin, authAdminOrScanner } = require('../middleware/auth');
 const { uploadToImageHost, deleteFromImageHost } = require('../utils/supabaseUpload');
 
 // In-memory storage — file never touches local disk, it goes straight to
@@ -40,7 +40,7 @@ router.get('/', async (req, res) => {
 });
 
 // ============ ADMIN: Get all events (for admin dashboard table) ============
-router.get('/admin/all', authAdmin, async (req, res) => {
+router.get('/admin/all', authAdminOrScanner, async (req, res) => {
   try {
     const events = await Event.find().sort({ createdAt: -1 });
     res.json({

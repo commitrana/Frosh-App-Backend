@@ -69,6 +69,73 @@ const authAdmin = async (req, res, next) => {
   }
 };
 
+// Middleware to verify scanner admin token (Frosh Ticketing site only —
+// can only scan tickets / view registrations, nothing else)
+const authScanner = async (req, res, next) => {
+  try {
+    const token = req.header('Authorization')?.replace('Bearer ', '');
+
+    if (!token) {
+      return res.status(401).json({ error: 'Authentication required.' });
+    }
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback_secret_key');
+
+    if (decoded.role !== 'scanner') {
+      return res.status(403).json({ error: 'Scanner admin access required.' });
+    }
+
+    req.scannerAdmin = decoded;
+    req.token = token;
+    next();
+
+  } catch (error) {
+    if (error.name === 'JsonWebTokenError') {
+      return res.status(401).json({ error: 'Invalid token.' });
+    }
+    if (error.name === 'TokenExpiredError') {
+      return res.status(401).json({ error: 'Token expired.' });
+    }
+    res.status(401).json({ error: 'Authentication failed.' });
+  }
+};
+
+// Middleware for routes that both the main admin AND a scanner admin may
+// call — used only by the ticket-scanning endpoints, so a scanner account
+// can hit those without needing full admin access anywhere else.
+const authAdminOrScanner = async (req, res, next) => {
+  try {
+    const token = req.header('Authorization')?.replace('Bearer ', '');
+
+    if (!token) {
+      return res.status(401).json({ error: 'Authentication required.' });
+    }
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback_secret_key');
+
+    if (decoded.role !== 'admin' && decoded.role !== 'scanner') {
+      return res.status(403).json({ error: 'Admin or scanner access required.' });
+    }
+
+    if (decoded.role === 'admin') {
+      req.admin = decoded;
+    } else {
+      req.scannerAdmin = decoded;
+    }
+    req.token = token;
+    next();
+
+  } catch (error) {
+    if (error.name === 'JsonWebTokenError') {
+      return res.status(401).json({ error: 'Invalid token.' });
+    }
+    if (error.name === 'TokenExpiredError') {
+      return res.status(401).json({ error: 'Token expired.' });
+    }
+    res.status(401).json({ error: 'Authentication failed.' });
+  }
+};
+
 // Middleware to verify member token
 const authMember = async (req, res, next) => {
   try {
@@ -160,4 +227,4 @@ const authFaculty = async (req, res, next) => {
 };
 
 // ============ EXPORT ALL MIDDLEWARES ============
-module.exports = { authSociety, authAdmin, authMember, authStudent, authFaculty };
+module.exports = { authSociety, authAdmin, authMember, authStudent, authFaculty, authScanner, authAdminOrScanner };

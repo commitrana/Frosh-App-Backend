@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const Event = require('../models/Event');
 const Ticket = require('../models/Ticket');
-const { authStudent, authAdmin } = require('../middleware/auth');
+const { authStudent, authAdmin, authAdminOrScanner } = require('../middleware/auth');
 
 // ============ STUDENT: Register for an event (issues a ticket) ============
 router.post('/register', authStudent, async (req, res) => {
@@ -120,7 +120,7 @@ router.get('/my-tickets', authStudent, async (req, res) => {
 });
 
 // ============ ADMIN: Scan a ticket QR code ============
-router.post('/scan', authAdmin, async (req, res) => {
+router.post('/scan', authAdminOrScanner, async (req, res) => {
   try {
     const { qrToken } = req.body;
 
@@ -161,7 +161,7 @@ router.post('/scan', authAdmin, async (req, res) => {
 });
 
 // ============ ADMIN: Get ticket stats for an event (issued / scanned / capacity) ============
-router.get('/stats/:eventId', authAdmin, async (req, res) => {
+router.get('/stats/:eventId', authAdminOrScanner, async (req, res) => {
   try {
     const event = await Event.findById(req.params.eventId);
     if (!event) {
@@ -182,7 +182,7 @@ router.get('/stats/:eventId', authAdmin, async (req, res) => {
 });
 
 // ============ ADMIN: Get all registrations (tickets) for an event ============
-router.get('/event/:eventId', authAdmin, async (req, res) => {
+router.get('/event/:eventId', authAdminOrScanner, async (req, res) => {
   try {
     const event = await Event.findById(req.params.eventId);
     if (!event) {
