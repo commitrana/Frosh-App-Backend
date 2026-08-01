@@ -61,26 +61,69 @@ router.post('/register', authStudent, async (req, res) => {
       });
     }
 
-    // Enforce the admin-set capacity, if one was set. Shared across all
-    // slots of the same event.
-    if (event.totalTickets !== null && event.totalTickets !== undefined) {
-      if (event.ticketsIssued >= event.totalTickets) {
+    // ---- Atomically reserve a seat BEFORE creating the ticket ----
+    // Previously this was "read ticketsIssued -> compare -> save ticket ->
+    // ticketsIssued += 1 -> save event", which is a read-modify-write race:
+    // two concurrent requests can both read the same ticketsIssued value,
+    // both pass the capacity check, both save their own ticket, and then
+    // both write back the SAME incremented value — one increment gets
+    // silently lost. That's what caused the counter to under-count real
+    // tickets (e.g. 130 actual tickets but only 128 shown), and is also
+    // what let bookings slip past totalTickets on the last seat.
+    //
+    // findOneAndUpdate with a $expr guard is a single atomic operation at
+    // the database level: MongoDB will only apply the $inc if the
+    // condition still holds AT THE MOMENT OF THE WRITE, so two concurrent
+    // requests can never both succeed on the last remaining ticket.
+    const hasCapacity = event.totalTickets !== null && event.totalTickets !== undefined;
+    let reservedEvent = event;
+
+    if (hasCapacity) {
+      reservedEvent = await Event.findOneAndUpdate(
+        {
+          _id: eventId,
+          $expr: { $lt: ['$ticketsIssued', '$totalTickets'] }
+        },
+        { $inc: { ticketsIssued: 1 } },
+        { new: true }
+      );
+      if (!reservedEvent) {
         return res.status(400).json({ error: 'Sorry, tickets for this event are sold out' });
       }
+    } else {
+      // No capacity limit set — still increment atomically so the
+      // "issued" counter never drifts out of sync with real tickets.
+      reservedEvent = await Event.findByIdAndUpdate(
+        eventId,
+        { $inc: { ticketsIssued: 1 } },
+        { new: true }
+      );
     }
 
-    const ticket = new Ticket({
-      event: eventId,
-      student: req.student.id,
-      slot
-    });
+    let ticket;
+    try {
+      ticket = new Ticket({
+        event: eventId,
+        student: req.student.id,
+        slot
+      });
+      await ticket.save();
+    } catch (err) {
+      // Ticket creation failed after we already reserved a seat —
+      // give the seat back so the counter stays accurate.
+      await Event.findByIdAndUpdate(eventId, { $inc: { ticketsIssued: -1 } });
 
-    await ticket.save();
-
-    // Atomic increment so concurrent registrations can never push the
-    // count past totalTickets.
-    event.ticketsIssued += 1;
-    await event.save();
+      // Duplicate key race: same student double-submitted at the same
+      // instant and the other request's ticket already exists.
+      if (err.code === 11000) {
+        const existingAfterRace = await Ticket.findOne({ event: eventId, student: req.student.id });
+        return res.json({
+          message: 'You are already registered for this event',
+          ticket: existingAfterRace
+        });
+      }
+      throw err;
+    }
 
     console.log(`✅ Ticket issued for event "${event.name}"${slot ? ` (slot ${slot})` : ''} to student ${req.student.email}`);
 
@@ -89,14 +132,6 @@ router.post('/register', authStudent, async (req, res) => {
       ticket
     });
   } catch (error) {
-    // Duplicate key race (two simultaneous requests from the same student)
-    if (error.code === 11000) {
-      const existing = await Ticket.findOne({ event: req.body.eventId, student: req.student.id });
-      return res.json({
-        message: 'You are already registered for this event',
-        ticket: existing
-      });
-    }
     console.error('❌ Register for event error:', error);
     res.status(500).json({ error: 'Server error: ' + error.message });
   }
