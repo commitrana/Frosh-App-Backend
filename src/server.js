@@ -83,6 +83,7 @@ app.use('/api/student', studentRoutes); // ALSO mount here — the app calls
                                          // it doesn't remove /api/admin access
 app.use('/api/events', eventRoutes);   // Public GET for app, /api/events/admin/* for admin management
 app.use('/api/tickets', ticketRoutes); // Student register/my-tickets, Admin scan/stats
+app.use('/api/scanner-admins', require('./routes/scannerAdmins')); // Scanner admin accounts for the standalone Frosh Ticketing site
 app.use('/api/bootcamp', bootcampRoutes); // Batch assignment: admin manage, student my-batch
 app.use('/api/faculty', facultyRoutes);
 app.use('/api/batches', batchRoutes);
