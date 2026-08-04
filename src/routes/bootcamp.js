@@ -270,4 +270,43 @@ router.get('/admin/batch-schedule/:batchCode', authAdmin, async (req, res) => {
   }
 });
 
+// 🆕 ADMIN: Get schedules for ALL batches (for special viewer)
+// This endpoint requires admin auth but works for both regular admins
+// and the special schedule viewer (who has role:schedule_viewer + isSpecial:true)
+router.get('/admin/all-schedules', authAdmin, async (req, res) => {
+  try {
+    console.log(`📅 Fetching schedules for all ${ALL_BATCHES.length} batches`);
+    
+    const allSchedules = {};
+    let errorCount = 0;
+    
+    for (const batch of ALL_BATCHES) {
+      try {
+        allSchedules[batch] = await buildTimetableForBatch(batch);
+      } catch (err) {
+        console.error(`❌ Failed to build schedule for ${batch}:`, err.message);
+        allSchedules[batch] = { 
+          batch, 
+          days: [], 
+          timeSlots: [], 
+          classes: [] 
+        };
+        errorCount++;
+      }
+    }
+    
+    console.log(`✅ All schedules fetched (${errorCount} errors)`);
+    
+    res.json({
+      success: true,
+      totalBatches: ALL_BATCHES.length,
+      batches: ALL_BATCHES,
+      schedules: allSchedules
+    });
+  } catch (error) {
+    console.error('❌ Get all schedules error:', error);
+    res.status(500).json({ error: 'Server error: ' + error.message });
+  }
+});
+
 module.exports = router;

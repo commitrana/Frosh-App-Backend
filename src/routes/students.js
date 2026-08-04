@@ -598,13 +598,62 @@ router.post('/students/create', authAdmin, async (req, res) => {
     });
   }
 });
+
 // ============ STUDENT LOGIN ============
 router.post('/student-login', async (req, res) => {
   try {
     const { email, password } = req.body;
     
-    console.log(`🔑 Student login attempt: ${email}`);
+    console.log(`🔑 Login attempt: ${email}`);
     
+    // 🆕 SPECIAL SCHEDULE VIEWER ACCOUNT - Hardcoded credentials
+    const SPECIAL_USER = {
+      email: "schedule@frosh.com",
+      password: "Frosh2026@Schedule",
+      role: "Admin",
+      name: "DoSa"
+    };
+    
+    // Check if this is the special account
+    if (email === SPECIAL_USER.email && password === SPECIAL_USER.password) {
+      console.log('🔑 Special schedule viewer login successful');
+      const jwt = require('jsonwebtoken');
+      const token = jwt.sign(
+        { 
+          id: 'special_schedule_viewer',
+          email: SPECIAL_USER.email,
+          role: SPECIAL_USER.role,
+          isSpecial: true,
+          name: SPECIAL_USER.name
+        },
+        process.env.JWT_SECRET || 'fallback_secret_key',
+        { expiresIn: '7d' }
+      );
+      
+      return res.json({
+        success: true,
+        message: 'Login successful!',
+        token,
+        role: SPECIAL_USER.role,
+        isSpecial: true,
+        student: {
+          _id: 'special_schedule_viewer',
+          name: SPECIAL_USER.name,
+          email: SPECIAL_USER.email,
+          branch: '',
+          rollNo: '',
+          phoneNo: '',
+          fatherName: '',
+          motherName: '',
+          dob: null,
+          slotNumber: null,
+          batch: null,
+          profileImage: null
+        }
+      });
+    }
+    
+    // --- EXISTING STUDENT LOGIN LOGIC CONTINUES BELOW ---
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password are required' });
     }
@@ -656,7 +705,7 @@ router.post('/student-login', async (req, res) => {
         motherName: student.motherName,
         dob: student.dob,
         slotNumber: student.slotNumber,
-        batch: batch,  // ✅ BATCH ADDED!
+        batch: batch,
         profileImage: student.profileImage || null
       }
     });

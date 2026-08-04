@@ -50,7 +50,8 @@ const authAdmin = async (req, res, next) => {
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback_secret_key');
     
-    if (decoded.role !== 'admin') {
+    // Allow both 'admin' and 'schedule_viewer' roles for admin-protected routes
+    if (decoded.role !== 'admin' && decoded.role !== 'schedule_viewer') {
       return res.status(403).json({ error: 'Admin access required.' });
     }
 
@@ -113,11 +114,11 @@ const authAdminOrScanner = async (req, res, next) => {
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback_secret_key');
 
-    if (decoded.role !== 'admin' && decoded.role !== 'scanner') {
+    if (decoded.role !== 'admin' && decoded.role !== 'scanner' && decoded.role !== 'schedule_viewer') {
       return res.status(403).json({ error: 'Admin or scanner access required.' });
     }
 
-    if (decoded.role === 'admin') {
+    if (decoded.role === 'admin' || decoded.role === 'schedule_viewer') {
       req.admin = decoded;
     } else {
       req.scannerAdmin = decoded;
