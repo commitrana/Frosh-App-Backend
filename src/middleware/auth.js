@@ -226,5 +226,41 @@ const authFaculty = async (req, res, next) => {
   }
 };
 
+// Middleware for routes any logged-in student OR faculty member may call —
+// used by the "view any group's timetable" dropdown, so it isn't locked to
+// a single role the way authStudent/authFaculty individually are.
+const authStudentOrFaculty = async (req, res, next) => {
+  try {
+    const token = req.header('Authorization')?.replace('Bearer ', '');
+
+    if (!token) {
+      return res.status(401).json({ error: 'Authentication required. Please login.' });
+    }
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback_secret_key');
+
+    if (decoded.role !== 'student' && decoded.role !== 'faculty') {
+      return res.status(403).json({ error: 'Student or faculty access required.' });
+    }
+
+    if (decoded.role === 'student') {
+      req.student = decoded;
+    } else {
+      req.faculty = decoded;
+    }
+    req.token = token;
+    next();
+
+  } catch (error) {
+    if (error.name === 'JsonWebTokenError') {
+      return res.status(401).json({ error: 'Invalid token. Please login again.' });
+    }
+    if (error.name === 'TokenExpiredError') {
+      return res.status(401).json({ error: 'Token expired. Please login again.' });
+    }
+    res.status(401).json({ error: 'Authentication failed.' });
+  }
+};
+
 // ============ EXPORT ALL MIDDLEWARES ============
-module.exports = { authSociety, authAdmin, authMember, authStudent, authFaculty, authScanner, authAdminOrScanner };
+module.exports = { authSociety, authAdmin, authMember, authStudent, authFaculty, authScanner, authAdminOrScanner, authStudentOrFaculty };
