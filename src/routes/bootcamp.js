@@ -1,17 +1,18 @@
 const express = require('express');
 const router = express.Router();
+const jwt = require('jsonwebtoken');
 const Student = require('../models/Student');
 const BootcampStudent = require('../models/BootcampStudent');
 const Faculty = require('../models/Faculty');
-const { authAdmin, authStudent, authStudentOrFaculty } = require('../middleware/auth');
+const { authAdmin, authStudent, authGroupViewer } = require('../middleware/auth');
 
-// ============ SPECIAL ACCESS: hardcoded id/password pairs allowed to view
-// ANY group's timetable (not just their own), on top of a normal
-// student/faculty login. Edit this list to add/remove people. This is the
-// ONLY place these credentials live — the frontend never sees this list,
-// it just forwards whatever someone types into the unlock form to
-// POST /group-viewer/verify below and reacts to the response. Keeping the
-// real list backend-only means it never ships in the browser's JS bundle.
+// ============ SPECIAL ACCESS: hardcoded id/password pairs that log
+// straight into the "view any group's timetable" experience via the
+// app's normal /login page — no separate unlock UI, no visible hint to
+// regular students that this exists. This is the ONLY place these
+// credentials live; the frontend never sees this list, it just tries these
+// against POST /group-viewer/login (below) as a fallback if a normal
+// student/faculty login fails. Edit this list to add/remove people.
 const GROUP_VIEWER_ACCESS = [
   { id: 'dosa@thapar.edu', password: 'admin123' },
   { id: 'doaa@thapar.edu', password: 'admin123' },
@@ -286,29 +287,43 @@ router.get('/admin/batch-schedule/:batchCode', authAdmin, async (req, res) => {
   }
 });
 
-// ============ STUDENT/FACULTY + SPECIAL ACCESS: Get any batch's class
-// schedule ============
-// Same underlying data + logic as /admin/batch-schedule/:batchCode. Two
-// layers of protection, both required:
-//   1. authStudentOrFaculty — must be logged in as a real student or
-//      faculty account (normal app login).
-//   2. x-viewer-id / x-viewer-password headers — must ALSO match one of the
-//      hardcoded GROUP_VIEWER_ACCESS pairs above. A normal student/faculty
-//      token by itself is NOT enough to reach another group's data; the
-//      frontend only sends these headers once someone has unlocked the
-//      coordinator view via a successful POST /group-viewer/verify call
-//      (see the gate in ScheduleSection.jsx).
-router.get('/batch-schedule/:batchCode', authStudentOrFaculty, async (req, res) => {
+// ============ SPECIAL ACCESS: log in as a group viewer ============
+// Tried by the frontend's loginUnified() as a fallback ONLY after both the
+// real student login and the real faculty login have already failed with
+// 401 — so this never interferes with normal accounts, and there is no
+// separate screen or visible hint anywhere in the app that this exists.
+// On a match, issues a normal-looking JWT (same shape/expiry as student
+// and faculty tokens) but with role: 'groupViewer', which authGroupViewer
+// below checks for. Not tied to the Student/Faculty collections at all.
+router.post('/group-viewer/login', async (req, res) => {
   try {
-    const viewerId = String(req.header('x-viewer-id') || '').trim();
-    const viewerPassword = String(req.header('x-viewer-password') || '');
+    const id = String(req.body?.email || req.body?.id || '').trim();
+    const password = String(req.body?.password || '');
 
-    if (!isValidGroupViewer(viewerId, viewerPassword)) {
-      return res.status(403).json({
-        error: "You don't have access to view other groups' timetables."
-      });
+    if (!isValidGroupViewer(id, password)) {
+      return res.status(401).json({ error: 'Invalid email or password.' });
     }
 
+    const token = jwt.sign(
+      { role: 'groupViewer', viewerId: id },
+      process.env.JWT_SECRET || 'fallback_secret_key',
+      { expiresIn: '7d' }
+    );
+
+    res.json({ token, groupViewer: { id } });
+  } catch (error) {
+    console.error('❌ Group viewer login error:', error);
+    res.status(500).json({ error: 'Server error: ' + error.message });
+  }
+});
+
+// ============ SPECIAL ACCESS: Get any batch's class schedule ============
+// Same underlying data + logic as /admin/batch-schedule/:batchCode, but
+// gated by authGroupViewer instead of admin or student login — only a
+// token from a successful POST /group-viewer/login above can reach this.
+// A normal student/faculty token does NOT work here, and vice versa.
+router.get('/batch-schedule/:batchCode', authGroupViewer, async (req, res) => {
+  try {
     const batchCode = (req.params.batchCode || '').trim();
 
     if (!ALL_BATCHES.includes(batchCode)) {
@@ -326,24 +341,6 @@ router.get('/batch-schedule/:batchCode', authStudentOrFaculty, async (req, res) 
     console.error('❌ Get batch schedule error:', error);
     res.status(500).json({ error: 'Server error: ' + error.message });
   }
-});
-
-// ============ SPECIAL ACCESS: verify a coordinator id/password ============
-// The frontend's "unlock" form calls this to check an id/password pair
-// before revealing the group dropdown — it doesn't need to know a batch
-// code just to validate credentials. Returns { ok: true } or a 403; never
-// returns any timetable data. The credential list (GROUP_VIEWER_ACCESS)
-// lives ONLY here on the backend now — nothing in the frontend repo knows
-// the real id/password pairs, so they never ship in the browser bundle.
-router.post('/group-viewer/verify', authStudentOrFaculty, async (req, res) => {
-  const id = String(req.body?.id || '').trim();
-  const password = String(req.body?.password || '');
-
-  if (!isValidGroupViewer(id, password)) {
-    return res.status(403).json({ error: 'Invalid access credentials.' });
-  }
-
-  res.json({ ok: true });
 });
 
 module.exports = router;

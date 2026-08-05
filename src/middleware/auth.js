@@ -262,5 +262,39 @@ const authStudentOrFaculty = async (req, res, next) => {
   }
 };
 
+// Middleware for the "view any group's timetable" feature. Only accepts a
+// token issued by POST /api/bootcamp/group-viewer/login (role: 'groupViewer')
+// — a normal student or faculty token does NOT pass this check, and this
+// token doesn't pass authStudent/authFaculty either. Fully separate identity
+// from real student/faculty accounts.
+const authGroupViewer = async (req, res, next) => {
+  try {
+    const token = req.header('Authorization')?.replace('Bearer ', '');
+
+    if (!token) {
+      return res.status(401).json({ error: 'Authentication required. Please login.' });
+    }
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback_secret_key');
+
+    if (decoded.role !== 'groupViewer') {
+      return res.status(403).json({ error: 'Group viewer access required.' });
+    }
+
+    req.groupViewer = decoded;
+    req.token = token;
+    next();
+
+  } catch (error) {
+    if (error.name === 'JsonWebTokenError') {
+      return res.status(401).json({ error: 'Invalid token. Please login again.' });
+    }
+    if (error.name === 'TokenExpiredError') {
+      return res.status(401).json({ error: 'Token expired. Please login again.' });
+    }
+    res.status(401).json({ error: 'Authentication failed.' });
+  }
+};
+
 // ============ EXPORT ALL MIDDLEWARES ============
-module.exports = { authSociety, authAdmin, authMember, authStudent, authFaculty, authScanner, authAdminOrScanner, authStudentOrFaculty };
+module.exports = { authSociety, authAdmin, authMember, authStudent, authFaculty, authScanner, authAdminOrScanner, authStudentOrFaculty, authGroupViewer };
