@@ -16,6 +16,7 @@ const { authAdmin, authStudent, authGroupViewer } = require('../middleware/auth'
 const GROUP_VIEWER_ACCESS = [
   { id: 'dosa@thapar.edu', password: 'admin123' },
   { id: 'doaa@thapar.edu', password: 'admin123' },
+  { id: 'frosh@thapar.edu', password: 'admin123' },
   // Add more { id, password } rows here as needed.
 ];
 
