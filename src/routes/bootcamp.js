@@ -344,4 +344,107 @@ router.get('/batch-schedule/:batchCode', authGroupViewer, async (req, res) => {
   }
 });
 
+// ============ SPECIAL ACCESS: Get all faculty timetables ============
+// Returns a list of all faculty members with their timetable data.
+// Only accessible with a groupViewer token (the special login).
+router.get('/faculty-timetables', authGroupViewer, async (req, res) => {
+  try {
+    const facultyList = await Faculty.find({})
+      .select('name department timetable timetableImage')
+      .sort({ name: 1 });
+
+    const formatted = facultyList.map((faculty) => ({
+      id: faculty._id,
+      name: faculty.name,
+      department: faculty.department || '',
+      timetable: faculty.timetable || { schedule: {} },
+      timetableImage: faculty.timetableImage || null
+    }));
+
+    res.json({
+      count: formatted.length,
+      faculty: formatted
+    });
+  } catch (error) {
+    console.error('❌ Get faculty timetables error:', error);
+    res.status(500).json({ error: 'Server error: ' + error.message });
+  }
+});
+
+// ============ SPECIAL ACCESS: Get a specific faculty's timetable ============
+// Fetches a single faculty member's timetable by ID.
+// Only accessible with a groupViewer token.
+router.get('/faculty-timetable/:facultyId', authGroupViewer, async (req, res) => {
+  try {
+    const faculty = await Faculty.findById(req.params.facultyId)
+      .select('name department timetable timetableImage');
+
+    if (!faculty) {
+      return res.status(404).json({ error: 'Faculty not found' });
+    }
+
+    res.json({
+      id: faculty._id,
+      name: faculty.name,
+      department: faculty.department || '',
+      timetable: faculty.timetable || { schedule: {} },
+      timetableImage: faculty.timetableImage || null
+    });
+  } catch (error) {
+    console.error('❌ Get faculty timetable error:', error);
+    res.status(500).json({ error: 'Server error: ' + error.message });
+  }
+});
+
+// ============ SPECIAL ACCESS: Get faculty member by email (for default schedule) ============
+// When a groupViewer logs in with an email that matches a faculty member,
+// this returns that faculty's data so they can default to their own schedule.
+router.get('/group-viewer/default-schedule', authGroupViewer, async (req, res) => {
+  try {
+    const viewerId = req.groupViewer.viewerId;
+    
+    // Try to find a faculty member with this email
+    const faculty = await Faculty.findOne({ 
+      email: { $regex: new RegExp(`^${viewerId}$`, 'i') } 
+    }).select('name department timetable timetableImage');
+
+    if (!faculty) {
+      return res.json({ found: false });
+    }
+
+    res.json({
+      found: true,
+      faculty: {
+        id: faculty._id,
+        name: faculty.name,
+        department: faculty.department || '',
+        timetable: faculty.timetable || { schedule: {} },
+        timetableImage: faculty.timetableImage || null
+      }
+    });
+  } catch (error) {
+    console.error('❌ Group viewer default schedule error:', error);
+    res.status(500).json({ error: 'Server error: ' + error.message });
+  }
+});
+
+// ============ SPECIAL ACCESS: Get all faculty members (list only) ============
+// Returns just the names and departments of all faculty members.
+// Used for the faculty dropdown in the frontend.
+router.get('/faculty-list', authGroupViewer, async (req, res) => {
+  try {
+    const facultyList = await Faculty.find({})
+      .select('name department')
+      .sort({ name: 1 });
+
+    res.json({
+      count: facultyList.length,
+      faculty: facultyList
+    });
+  } catch (error) {
+    console.error('❌ Get faculty list error:', error);
+    res.status(500).json({ error: 'Server error: ' + error.message });
+  }
+});
+
 module.exports = router;
